@@ -63,7 +63,7 @@ export function renderAdminDashboard(route: AdminRoute = "overview"): string {
       <aside class="sidebar" aria-label="Admin navigation">
         <div class="brand">
           <span>Dispatch Sentinel</span>
-          <strong>Phase 10 Admin</strong>
+          <strong>Phase 12 Admin</strong>
         </div>
         <nav>
           ${routes.map((item) => `<a href="#${item.id}" class="${item.id === route ? "active" : ""}">${item.label}</a>`).join("")}

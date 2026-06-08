@@ -43,7 +43,7 @@ describe("API server", () => {
     expect(body).toEqual({
       status: "ok",
       service: "dispatch-sentinel-api",
-      phase: "10",
+      phase: "12",
       checks: {
         api: "ok",
         database: "ok",
@@ -110,7 +110,7 @@ describe("API server", () => {
       const listBody = await listResponse.json() as { components: Array<{ slug: string }> };
 
       expect(listResponse.status).toBe(200);
-      expect(listBody.components).toHaveLength(6);
+      expect(listBody.components).toHaveLength(13);
 
       const getResponse = await adminFetch(fixture.port, token, "/api/admin/components/restart-print-spooler");
       const getBody = await getResponse.json() as { component: { slug: string; enabled: boolean } };

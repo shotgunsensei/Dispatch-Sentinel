@@ -4,6 +4,8 @@ export type DeviceKind = "workstation" | "server" | "network" | "unknown";
 
 export type ComponentRiskLevel = "low" | "medium" | "high" | "critical";
 
+export type TenantRole = "read_only" | "operator" | "admin";
+
 export type AutomationDecisionOutcome =
   | "AUTO_ELIGIBLE_CONFIRM_CLIENT"
   | "ASK_CLIENT_TO_SELECT_DEVICE"
@@ -18,6 +20,13 @@ export type TicketIntent =
   | "clear_safe_temp_files"
   | "restart_user_app_process"
   | "reboot_workstation"
+  | "repair_mapped_drive"
+  | "restart_scanner_wia"
+  | "restart_vpn_client"
+  | "collect_vpn_diagnostics"
+  | "browser_cache_cleanup"
+  | "teams_office_diagnostics"
+  | "clear_stuck_print_jobs"
   | "password_reset"
   | "mfa_reset"
   | "security_incident"
@@ -127,6 +136,57 @@ export interface AutomationRun {
   completedAt: string | null;
   resultSummary: string | null;
   errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Tenant {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "disabled";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantIntegrationConfig {
+  tenantId: string;
+  bmsBaseUrl: string | null;
+  bmsWebhookSecretRef: string | null;
+  dattoRmmBaseUrl: string | null;
+  dattoRmmApiKeyRef: string | null;
+  dattoRmmApiSecretRef: string | null;
+  dattoRmmExecutionEnabled: boolean;
+  updatedAt: string;
+}
+
+export interface TenantExecutionSettings {
+  tenantId: string;
+  globalAutomationDisabled: boolean;
+  dryRunOnly: boolean;
+  allowedAccounts: string[];
+  blockedAccounts: string[];
+  maxRunsPerDevicePerDay: number;
+  updatedAt: string;
+}
+
+export interface TenantAuditEvent {
+  id: string;
+  tenantId: string;
+  type: string;
+  ticketId: string | null;
+  deviceUid: string | null;
+  componentId: string | null;
+  outcome: "success" | "rejected" | "error";
+  metadata: Record<string, string | number | boolean | null>;
+  createdAt: string;
+}
+
+export interface TenantUserRole {
+  tenantId: string;
+  userId: string;
+  email: string;
+  role: TenantRole;
   createdAt: string;
   updatedAt: string;
 }

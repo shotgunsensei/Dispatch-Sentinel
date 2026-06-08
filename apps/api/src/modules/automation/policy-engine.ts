@@ -40,7 +40,14 @@ const safeMvpIntents = new Set<TicketIntent>([
   "collect_workstation_diagnostics",
   "clear_safe_temp_files",
   "restart_user_app_process",
-  "reboot_workstation"
+  "reboot_workstation",
+  "repair_mapped_drive",
+  "restart_scanner_wia",
+  "restart_vpn_client",
+  "collect_vpn_diagnostics",
+  "browser_cache_cleanup",
+  "teams_office_diagnostics",
+  "clear_stuck_print_jobs"
 ]);
 
 export function evaluateTicketPolicy(input: PolicyInput): PolicyDecision {

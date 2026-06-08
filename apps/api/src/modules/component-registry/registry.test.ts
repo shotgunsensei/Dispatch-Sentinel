@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ComponentRegistryRepository, mvpComponentRegistrySeed, validateComponentRegistryEntry } from "./registry.js";
 
 describe("ComponentRegistryRepository", () => {
-  it("seeds the six MVP components", () => {
+  it("seeds the Phase 11 approved components", () => {
     const registry = new ComponentRegistryRepository();
 
     expect(registry.list().map((entry) => entry.name)).toEqual([
@@ -11,7 +11,14 @@ describe("ComponentRegistryRepository", () => {
       "Collect Workstation Diagnostics",
       "Clear Safe Temp Files",
       "Restart User App Process",
-      "Reboot Workstation"
+      "Reboot Workstation",
+      "Repair Mapped Drive",
+      "Restart Scanner WIA Services",
+      "Restart Known VPN Client Service",
+      "Collect VPN Diagnostics",
+      "Browser Cache Cleanup",
+      "Teams Office Basic Diagnostics",
+      "Clear Stuck Print Jobs"
     ]);
   });
 

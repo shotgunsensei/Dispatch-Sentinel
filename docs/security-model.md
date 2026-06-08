@@ -51,3 +51,19 @@ Secrets must come only from environment variables or a secret provider. Logs mus
 - Structured logs pass through recursive secret redaction before output.
 - Health checks report API, database configuration, queue state, BMS adapter, and Datto RMM adapter status.
 - Global automation, account blocking, component disabling, device eligibility, and dry-run-only switches all fail closed.
+
+## Phase 11 Library Safety
+
+- New automation categories are only eligible when a matching enabled component registry entry exists.
+- New browser, VPN, Teams, and Office rules are limited to diagnostics, safe cache cleanup, or service restart categories.
+- Account, credential, MFA, VPN policy, firewall, Office licensing, and saved-password variants escalate to human review.
+- Expanded registry entries do not expand live Datto RMM execution; live execution remains separately allow-listed.
+
+## Phase 12 Tenant Isolation
+
+- BMS and Datto configuration is stored per tenant and references secrets rather than storing raw credentials.
+- Component registry changes are scoped to one tenant.
+- Audit log export is scoped to one tenant.
+- Execution settings are scoped to one tenant.
+- User roles are scoped to one tenant and cannot authorize access to another tenant.
+- Disabled tenants cannot be used for ticket/device/component operations.

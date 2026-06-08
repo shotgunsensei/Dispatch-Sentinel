@@ -196,3 +196,44 @@ Still excluded:
 - New automation categories.
 - SaaS billing.
 - Unrelated integrations.
+
+## Phase 11: Approved Automation Library Expansion
+
+Status: implemented.
+
+Implemented:
+
+- New classifier intents for mapped drive repair, scanner/WIA restart, known VPN client restart, VPN diagnostics, browser cache cleanup, Teams/Office diagnostics, and stuck print job cleanup.
+- Component registry seed entries for each new approved category.
+- Policy engine safe-intent coverage that still requires registry, device, risk, confidence, and approval gates.
+- Tests for every new category.
+- Unsafe VPN credential/policy, browser credential, and Office/Teams account variants escalate to human review.
+
+Still excluded:
+
+- Bypassing the component registry.
+- High-risk actions without technician approval.
+- Account or security remediation.
+- Expanding the Phase 7 live execution allow-list.
+
+## Phase 12: Productization Tenant Model
+
+Status: implemented.
+
+Implemented:
+
+- Tenant model with active/disabled tenant status.
+- Per-tenant BMS and Datto configuration using secret references.
+- Per-tenant component registry repository.
+- Per-tenant audit log repository.
+- Per-tenant execution settings repository.
+- Tenant-scoped read-only, operator, and admin roles.
+- Tenant isolation tests for registry, audit logs, integration config, execution settings, and roles.
+- Deployment documentation.
+- Security review documentation.
+
+Still excluded:
+
+- SaaS billing.
+- Core automation safety logic changes.
+- Cross-tenant access.

@@ -21,7 +21,7 @@ import { TicketIntakeService } from "./modules/tickets/intake-service.js";
 export interface HealthResponse {
   status: "ok";
   service: "dispatch-sentinel-api";
-  phase: "10";
+  phase: "12";
   checks: {
     api: "ok";
     database: "ok" | "not_configured";
@@ -129,7 +129,7 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
       writeJson(response, 200, {
         status: "ok",
         service: "dispatch-sentinel-api",
-        phase: "10",
+        phase: "12",
         checks: healthChecks(config, dependencies)
       } satisfies HealthResponse);
       return;
@@ -426,7 +426,7 @@ export function createApiServer(config: ApiConfig, logger: Logger, dependencies 
           logger.info("API server started", {
             host: config.host,
             port: config.port,
-            phase: "10"
+            phase: "12"
           });
           pollingWorker?.start();
           resolve();

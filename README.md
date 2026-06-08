@@ -4,9 +4,9 @@ Dispatch Sentinel is an MSP automation approval and execution layer for Kaseya D
 
 ## Current Phase Status
 
-This repository is in **Phase 10 only**. It includes mocked BMS intake, rule-based decisions, approved component registry, device matching, one-time approval tokens, dry-run Datto RMM quick job execution, guarded live Datto RMM quick job execution for allowed low-risk workstation components, an admin dashboard/control API, BMS ticket note/status/queue workflow integration, and production safety hardening.
+This repository is in **Phase 12 only**. It includes mocked BMS intake, rule-based decisions, approved component registry, device matching, one-time approval tokens, dry-run Datto RMM quick job execution, guarded live Datto RMM quick job execution for allowed low-risk workstation components, an admin dashboard/control API, BMS ticket note/status/queue workflow integration, production safety hardening, an expanded registry-controlled automation library, and tenant productization boundaries.
 
-Phase 10 includes:
+Phase 12 includes:
 
 - BMS adapter interface, mock fixtures, and webhook intake.
 - Ticket normalization, classifier, policy engine, and internal notes.
@@ -34,8 +34,14 @@ Phase 10 includes:
 - Health checks for API, database configuration, queue state, BMS adapter, and Datto RMM adapter.
 - Export endpoints for audit logs, component registry, and automation run history.
 - Kill switches for global automation, accounts, components, devices, and dry-run-only operation.
+- New registry-controlled categories: mapped drive repair, scanner/WIA restart, known VPN client restart, VPN diagnostics, browser cache cleanup, Teams/Office basic diagnostics, reboot workstation with confirmation, and clear stuck print jobs with confirmation.
+- Unsafe VPN, browser credential, and Office/account variations escalate to human review.
+- Tenant model with active/disabled tenant status.
+- Per-tenant BMS and Datto configuration using secret references.
+- Per-tenant component registry, audit logs, execution settings, and admin/operator/read-only roles.
+- Deployment and security review documentation.
 
-Phase 10 intentionally does **not** include:
+Phase 12 intentionally does **not** include:
 
 - Real Kaseya BMS API calls.
 - Live Datto RMM execution by default when `DATTO_RMM_EXECUTION_ENABLED` is unset or false.
@@ -49,6 +55,8 @@ Phase 10 intentionally does **not** include:
 - Arbitrary script generation.
 - Dynamic component creation from tickets.
 - Bypassing approval or registry controls.
+- Account or security remediation.
+- SaaS billing.
 
 ## Local Setup
 
@@ -69,7 +77,7 @@ Expected response:
 {
   "status": "ok",
   "service": "dispatch-sentinel-api",
-  "phase": "10",
+  "phase": "12",
   "checks": {
     "api": "ok",
     "database": "ok",
@@ -117,6 +125,8 @@ Dry-run quick jobs create automation run records and fake Datto job UIDs without
 - Run GPUpdate.
 - Collect Workstation Diagnostics.
 
+Phase 11 expands the approved registry library but does not expand this live execution allow-list.
+
 Execution guard requirements:
 
 - Decision is `AUTO_ELIGIBLE_CONFIRM_CLIENT`.
@@ -162,6 +172,10 @@ The web app renders admin routes for overview, ticket evaluations, component reg
 BMS writes are disabled by default. When enabled, Dispatch Sentinel writes internal notes that explain each decision, updates human-visible statuses, and routes tickets to configured queues without closing tickets or changing priority by default.
 
 Repeated webhooks and repeated decision/run updates are idempotent and are logged as skipped audit events instead of duplicating notes.
+
+## Phase 12 Tenant Productization
+
+Tenant-scoped repositories isolate BMS/Datto configuration, component registry entries, audit logs, execution settings, and user roles. Use `docs/deployment.md` and `docs/security-review.md` before any external rollout.
 
 ## Verification
 

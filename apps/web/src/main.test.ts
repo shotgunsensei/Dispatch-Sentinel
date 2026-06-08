@@ -5,7 +5,7 @@ describe("admin dashboard routes", () => {
   it("renders the overview route", () => {
     const html = renderAdminDashboard("overview");
 
-    expect(html).toContain("Phase 10 Admin");
+    expect(html).toContain("Phase 12 Admin");
     expect(html).toContain("Tickets evaluated today");
     expect(html).toContain("Escalated to human");
   });

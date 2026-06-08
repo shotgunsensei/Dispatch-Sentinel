@@ -2,7 +2,7 @@
   "name": "dispatch-sentinel",
   "version": "0.0.0",
   "private": true,
-  "description": "Phase 10 production hardening for Dispatch Sentinel.",
+  "description": "Phase 12 productization tenant isolation for Dispatch Sentinel.",
   "workspaces": [
     "apps/*",
     "packages/*"

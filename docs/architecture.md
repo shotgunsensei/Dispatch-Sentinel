@@ -2,16 +2,16 @@
 
 Dispatch Sentinel is the approval, classification, decision, and audit layer between Kaseya Datto BMS and Datto RMM.
 
-## Phase 10 Scope
+## Phase 12 Scope
 
-Phase 10 hardens Dispatch Sentinel for production use with admin authentication, role permissions, secret redaction, rate limiting, health checks, exports, and execution kill switches on top of the BMS workflow and guarded execution layer.
+Phase 12 prepares Dispatch Sentinel for productization by adding tenant boundaries around configuration, component registry, audit logs, execution settings, and user roles while preserving core automation safety logic.
 
-- `apps/api`: HTTP API, config loader, redacting logger, admin auth, rate limiter, BMS webhook intake, mock BMS adapter, BMS workflow service, mock Datto device adapter, Datto RMM adapter interface, dry-run adapter, guarded real adapter, automation runner, job poller, result callback handler, classifier, device matcher, policy engine, component registry, approval token service, admin dashboard API, exports, health checks, and audit sink.
-- `apps/web`: static admin dashboard shell that reports Phase 10 status.
+- `apps/api`: HTTP API, config loader, redacting logger, admin auth, tenant stores, rate limiter, BMS webhook intake, mock BMS adapter, BMS workflow service, mock Datto device adapter, Datto RMM adapter interface, dry-run adapter, guarded real adapter, automation runner, job poller, result callback handler, classifier, device matcher, policy engine, component registry, approval token service, admin dashboard API, exports, health checks, and audit sink.
+- `apps/web`: static admin dashboard shell that reports Phase 12 status.
 - `packages/shared`: shared TypeScript domain contracts.
 - `docs`: architecture, security, registry, operations, and phase planning.
 
-No Phase 10 module may add new automation categories, SaaS billing, unrelated integrations, unsafe execution bypasses, server execution, high-risk execution, arbitrary script upload, or Datto component creation.
+No Phase 12 module may add billing, modify core automation safety logic, bypass the component registry, or permit cross-tenant ticket/device/component/audit access.
 
 ## API Module Boundaries
 
@@ -25,7 +25,8 @@ No Phase 10 module may add new automation categories, SaaS billing, unrelated in
 - `automation`: execution guard, automation run tracking, job status polling, and component result callback handling.
 - `audit`: in-memory audit event sink.
 - `admin`: authentication, role permissions, rate limiting, dashboard overview, ticket evaluation review, component registry management, approval review, run review, queue monitoring, audit filtering/export, component/run exports, and safety settings.
+- `tenants`: tenant model, per-tenant integration config, component registry, audit logs, execution settings, and tenant-scoped roles.
 
 ## Database Draft
 
-Migrations cover Phase 0 through Phase 10. Phase 10 drafts admin users, sessions, rate-limit events, and hardening flags in `apps/api/db/migrations/0011_phase10_production_hardening.sql`.
+Migrations cover Phase 0 through Phase 12. Phase 12 drafts tenants and tenant-scoped columns in `apps/api/db/migrations/0013_phase12_tenants.sql`.

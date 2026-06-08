@@ -19,7 +19,7 @@ Phase 3 seeds the MVP approved component registry and exposes controlled admin u
 - `requires_tech_approval`: whether a technician must approve before action.
 - `max_runs_per_device_per_day`: future execution guardrail.
 
-## Seeded MVP Components
+## Seeded Approved Components
 
 - Restart Print Spooler
 - Run GPUpdate
@@ -27,6 +27,13 @@ Phase 3 seeds the MVP approved component registry and exposes controlled admin u
 - Clear Safe Temp Files
 - Restart User App Process
 - Reboot Workstation
+- Repair Mapped Drive
+- Restart Scanner WIA Services
+- Restart Known VPN Client Service
+- Collect VPN Diagnostics
+- Browser Cache Cleanup
+- Teams Office Basic Diagnostics
+- Clear Stuck Print Jobs
 
 ## MVP Candidate Categories
 
@@ -40,3 +47,9 @@ Only these categories may be considered in MVP implementation phases:
 - Reboot workstation only if explicitly confirmed and enabled.
 
 All other component matches must route to human review or denial.
+
+## Phase 11 Safety Notes
+
+- New entries remain registry-controlled and workstation-scoped.
+- VPN credential, MFA, policy, firewall, browser saved-password, Office license, Office account, Teams login, and Teams MFA variants must escalate to human review.
+- Phase 11 does not add live Datto RMM execution for the expanded library; live execution remains separately gated by the Phase 7 allow-list.

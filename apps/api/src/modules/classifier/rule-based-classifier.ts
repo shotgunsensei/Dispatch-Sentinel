@@ -26,6 +26,10 @@ interface IntentRule {
 
 const safeIntentRules: IntentRule[] = [
   {
+    intent: "clear_stuck_print_jobs",
+    keywords: [/clear stuck print jobs/i, /clear print queue/i, /stuck print jobs/i]
+  },
+  {
     intent: "restart_print_spooler",
     keywords: [/print(?:er|ing)?/i, /spooler/i, /stuck print queue/i]
   },
@@ -48,6 +52,30 @@ const safeIntentRules: IntentRule[] = [
   {
     intent: "reboot_workstation",
     keywords: [/reboot workstation/i, /restart workstation/i, /reboot (?:pc|computer|laptop)/i]
+  },
+  {
+    intent: "repair_mapped_drive",
+    keywords: [/mapped drive (?:missing|not working|repair|fix|disconnected)/i, /network drive (?:missing|not working|disconnected)/i]
+  },
+  {
+    intent: "restart_scanner_wia",
+    keywords: [/scanner (?:not working|stuck|offline)/i, /\bwia\b/i, /windows image acquisition/i]
+  },
+  {
+    intent: "restart_vpn_client",
+    keywords: [/restart (?:known )?vpn (?:client|service)/i, /vpn client (?:hung|stuck|not responding)/i]
+  },
+  {
+    intent: "collect_vpn_diagnostics",
+    keywords: [/vpn diagnostics/i, /collect vpn logs/i, /vpn connection diagnostics/i]
+  },
+  {
+    intent: "browser_cache_cleanup",
+    keywords: [/browser cache/i, /clear (?:chrome|edge|browser) cache/i, /website cache issue/i]
+  },
+  {
+    intent: "teams_office_diagnostics",
+    keywords: [/(?:teams|office|outlook) diagnostics/i, /collect (?:teams|office|outlook) logs/i, /office basic diagnostics/i]
   }
 ];
 
@@ -83,7 +111,11 @@ const hardDenyKeywordRules = [
   /network policy/i,
   /backup failure/i,
   /delete (?:data|files|folder)/i,
-  /data deletion/i
+  /data deletion/i,
+  /vpn (?:password|credential|mfa|token|policy|firewall)/i,
+  /browser (?:password|saved passwords|credentials)/i,
+  /office (?:license|activation|account|password)/i,
+  /teams (?:account|login|mfa|password)/i
 ];
 
 const ambiguousKeywordRules = [
