@@ -1,0 +1,20 @@
+{
+  "name": "dispatch-sentinel",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 10 production hardening for Dispatch Sentinel.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @dispatch-sentinel/api",
+    "dev:web": "npm run dev -w @dispatch-sentinel/web",
+    "build": "npm run build -w @dispatch-sentinel/shared && npm run build -w @dispatch-sentinel/api && npm run build -w @dispatch-sentinel/web",
+    "typecheck": "npm run build -w @dispatch-sentinel/shared && npm run typecheck -w @dispatch-sentinel/api && npm run typecheck -w @dispatch-sentinel/web && npm run typecheck -w @dispatch-sentinel/shared",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
