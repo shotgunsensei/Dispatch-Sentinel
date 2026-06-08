@@ -8,21 +8,20 @@
     "packages/*"
   ],
   "scripts": {
-  "dev": "npm run dev -w @dispatch-sentinel/api",
-  "dev:web": "npm run dev -w @dispatch-sentinel/web",
-
-  "build": "npm run build:shared && npm run build:api && npm run build:web",
-  "build:shared": "npm run build -w @dispatch-sentinel/shared",
-  "build:api": "npm run build:shared && npm run build -w @dispatch-sentinel/api",
-  "build:web": "npm run build:shared && npm run build -w @dispatch-sentinel/web",
-
-  "typecheck": "npm run typecheck:shared && npm run typecheck:api && npm run typecheck:web",
-  "typecheck:shared": "npm run typecheck -w @dispatch-sentinel/shared",
-  "typecheck:api": "npm run build:shared && npm run typecheck -w @dispatch-sentinel/api",
-  "typecheck:web": "npm run build:shared && npm run typecheck -w @dispatch-sentinel/web",
-
-  "test": "npm run test --workspaces --if-present"
-}
+    "dev": "npm run dev -w @dispatch-sentinel/api",
+    "dev:web": "npm run dev -w @dispatch-sentinel/web",
+    "build": "npm run build:shared && npm run build:api:only && npm run build:web:only",
+    "build:shared": "npm run build -w @dispatch-sentinel/shared",
+    "build:api": "npm run build:shared && npm run build:api:only",
+    "build:api:only": "npm run build -w @dispatch-sentinel/api",
+    "build:web": "npm run build:shared && npm run build:web:only",
+    "build:web:only": "npm run build -w @dispatch-sentinel/web",
+    "typecheck": "npm run typecheck:shared && npm run typecheck:api && npm run typecheck:web",
+    "typecheck:shared": "npm run typecheck -w @dispatch-sentinel/shared",
+    "typecheck:api": "npm run build:shared && npm run typecheck -w @dispatch-sentinel/api",
+    "typecheck:web": "npm run build:shared && npm run typecheck -w @dispatch-sentinel/web",
+    "test": "npm run test --workspaces --if-present"
+  },
   "engines": {
     "node": ">=20.0.0"
   }
