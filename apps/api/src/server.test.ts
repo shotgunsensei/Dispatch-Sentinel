@@ -26,6 +26,35 @@ const silentLogger = {
 };
 
 describe("API server", () => {
+  it("returns API metadata from the root route", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/`);
+      const body = await response.json() as {
+        ok: boolean;
+        service: string;
+        name: string;
+        phase: string;
+        routes: { health: string; bmsWebhook: string };
+      };
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        ok: true,
+        service: "dispatch-sentinel-api",
+        name: "Dispatch Sentinel",
+        phase: "12",
+        routes: {
+          health: "/health",
+          bmsWebhook: "/api/webhooks/bms"
+        }
+      });
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("returns OK from the health endpoint", async () => {
     const config = testConfig();
     const api = createApiServer(config, createLogger("error"));
@@ -52,6 +81,33 @@ describe("API server", () => {
         dattoRmmAdapter: "dry_run"
       }
     });
+  });
+
+  it("returns public health readiness flags", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/health`);
+      const body = await response.json() as {
+        ok: boolean;
+        service: string;
+        environment: string;
+        config: { bmsWebhookConfigured: boolean; dattoExecutionEnabled: boolean };
+      };
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        ok: true,
+        service: "dispatch-sentinel-api",
+        environment: "test",
+        config: {
+          bmsWebhookConfigured: true,
+          dattoExecutionEnabled: false
+        }
+      });
+    } finally {
+      await fixture.stop();
+    }
   });
 
   it("returns public health without BMS webhook configuration", async () => {
@@ -98,6 +154,39 @@ describe("API server", () => {
       expect(text).not.toContain("super-secret-bms-value");
       expect(text).not.toContain("super-secret-callback-value");
       expect(text).not.toContain("super-secret-approval-value");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("returns no content for favicon routes", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const ico = await fetch(`http://127.0.0.1:${fixture.port}/favicon.ico`);
+      const png = await fetch(`http://127.0.0.1:${fixture.port}/favicon.png`);
+
+      expect(ico.status).toBe(204);
+      expect(await ico.text()).toBe("");
+      expect(png.status).toBe(204);
+      expect(await png.text()).toBe("");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("returns 404 for unknown routes", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/not-a-route`);
+      const body = await response.json() as { error: string; message: string };
+
+      expect(response.status).toBe(404);
+      expect(body).toEqual({
+        error: "not_found",
+        message: "Route not found."
+      });
     } finally {
       await fixture.stop();
     }

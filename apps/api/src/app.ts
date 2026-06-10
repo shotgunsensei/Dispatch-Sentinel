@@ -43,6 +43,17 @@ export interface PublicHealthResponse {
   };
 }
 
+export interface RootResponse {
+  ok: true;
+  service: "dispatch-sentinel-api";
+  name: "Dispatch Sentinel";
+  phase: "12";
+  routes: {
+    health: "/health";
+    bmsWebhook: "/api/webhooks/bms";
+  };
+}
+
 export interface ApiDependencies {
   auditSink: InMemoryAuditSink;
   ticketIntakeService: TicketIntakeService;
@@ -144,6 +155,28 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
 export function createRequestHandler(config: ApiConfig, logger: Logger, dependencies: ApiDependencies) {
   return async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
+
+    if (request.method === "GET" && url.pathname === "/") {
+      writeJson(response, 200, {
+        ok: true,
+        service: "dispatch-sentinel-api",
+        name: "Dispatch Sentinel",
+        phase: "12",
+        routes: {
+          health: "/health",
+          bmsWebhook: "/api/webhooks/bms"
+        }
+      } satisfies RootResponse);
+      return;
+    }
+
+    if (request.method === "GET" && (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png")) {
+      response.writeHead(204, {
+        "cache-control": "public, max-age=86400"
+      });
+      response.end();
+      return;
+    }
 
     if (request.method === "GET" && url.pathname === "/health") {
       writeJson(response, 200, {
