@@ -1,6 +1,6 @@
+"use client";
+
 import React, { FormEvent, useEffect, useState } from "react";
-import { createRoot } from "react-dom/client";
-import "./styles.css";
 
 type RouteName = "login" | "dashboard" | "tenants" | "tenant-new" | "tenant-detail" | "tenant-secrets" | "tenant-tests";
 type ApiStatus = "checking" | "online" | "offline";
@@ -57,7 +57,7 @@ interface IntegrationTestRun {
   createdAt: string;
 }
 
-const apiBaseUrl = (import.meta.env.NEXT_PUBLIC_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const sessionKey = "dispatch-sentinel-admin-token";
 
 const navItems: Array<{ route: RouteName; href: string; label: string }> = [
@@ -81,13 +81,14 @@ export function routeFromPath(pathname: string): { route: RouteName; tenantId: s
   return { route: "dashboard", tenantId: null };
 }
 
-export function App(): React.ReactElement {
-  const [route, setRoute] = useState(() => routeFromPath(window.location.pathname));
-  const [token, setToken] = useState(() => sessionStorage.getItem(sessionKey) ?? "");
+export function AdminApp({ initialPath }: { initialPath: string }): React.ReactElement {
+  const [route, setRoute] = useState(() => routeFromPath(initialPath));
+  const [token, setToken] = useState("");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
 
   useEffect(() => {
+    setToken(sessionStorage.getItem(sessionKey) ?? "");
     const onPop = () => setRoute(routeFromPath(window.location.pathname));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -804,9 +805,4 @@ export function renderRouteForTest(pathname: string): React.ReactElement {
   return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} token="test-token" navigate={() => undefined}>
     {route.route === "tenant-new" ? <NewTenantPage token="test-token" navigate={() => undefined} /> : <DashboardPage token="test-token" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
   </Shell>;
-}
-
-const root = typeof document === "undefined" ? null : document.querySelector("#app");
-if (root) {
-  createRoot(root).render(<App />);
 }

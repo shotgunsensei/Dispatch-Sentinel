@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { renderRouteForTest, routeFromPath } from "./main.js";
+import { renderRouteForTest, routeFromPath } from "./AdminApp.js";
 
 describe("admin GUI routes", () => {
   it("maps required admin routes", () => {

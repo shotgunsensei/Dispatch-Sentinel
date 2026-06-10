@@ -185,3 +185,15 @@ npm test
 npm run build
 npm audit
 ```
+
+## Web Vercel Project
+
+Deploy the admin GUI as a separate Vercel project from the API backend.
+
+- Root Directory: `apps/web`
+- Install Command: `npm install`
+- Build Command: `npm run build`
+- Output Directory: `.next`
+- Required env var: `NEXT_PUBLIC_API_BASE_URL`
+
+Do not use API/root build commands such as `npm run build:shared && npm run build:api:only` for the web project.
