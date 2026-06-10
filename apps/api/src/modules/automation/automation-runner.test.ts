@@ -288,6 +288,7 @@ function config(executionEnabled: boolean): ApiConfig {
     dattoRmmTimeoutMs: 1000,
     automationCallbackBaseUrl: "https://dispatch.example.test",
     automationCallbackSecret: "callback-secret",
+    approvalTokenSecret: "approval-token-secret",
     automationJobTimeoutMinutes: 30,
     bmsWritesEnabled: true,
     bmsQueueAutomationReview: "Automation Review",

@@ -1,17 +1,20 @@
+import { randomUUID } from "node:crypto";
+
 export interface ApiConfig {
   nodeEnv: string;
   host: string;
   port: number;
   logLevel: "debug" | "info" | "warn" | "error";
   databaseUrl: string;
-  bmsWebhookSecret: string;
+  bmsWebhookSecret: string | null;
   dattoRmmExecutionEnabled: boolean;
   dattoRmmBaseUrl: string | null;
   dattoRmmApiKey: string | null;
   dattoRmmApiSecret: string | null;
   dattoRmmTimeoutMs: number;
   automationCallbackBaseUrl: string;
-  automationCallbackSecret: string;
+  automationCallbackSecret: string | null;
+  approvalTokenSecret: string | null;
   automationJobTimeoutMinutes: number;
   bmsWritesEnabled: boolean;
   bmsQueueAutomationReview: string;
@@ -46,12 +49,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const port = Number(env.API_PORT ?? 4310);
   const logLevel = env.LOG_LEVEL ?? "info";
   const nodeEnv = env.NODE_ENV ?? "development";
-  const bmsWebhookSecret = env.BMS_WEBHOOK_SECRET ?? (nodeEnv === "production" ? "" : "local-phase1-bms-secret");
+  const bmsWebhookSecret = env.BMS_WEBHOOK_SECRET ?? (nodeEnv === "production" ? null : "local-phase1-bms-secret");
   const dattoRmmTimeoutMs = Number(env.DATTO_RMM_TIMEOUT_MS ?? 10000);
-  const automationCallbackSecret = env.AUTOMATION_CALLBACK_SECRET ?? (nodeEnv === "production" ? "" : "local-phase7-callback-secret");
+  const automationCallbackSecret =
+    env.COMPONENT_CALLBACK_SECRET ?? env.AUTOMATION_CALLBACK_SECRET ?? (nodeEnv === "production" ? null : "local-phase7-callback-secret");
+  const approvalTokenSecret = env.APPROVAL_TOKEN_SECRET ?? (nodeEnv === "production" ? null : "local-approval-token-secret");
   const automationJobTimeoutMinutes = Number(env.AUTOMATION_JOB_TIMEOUT_MINUTES ?? 30);
   const adminBootstrapEmail = env.ADMIN_BOOTSTRAP_EMAIL ?? "admin@dispatch.local";
-  const adminBootstrapPassword = env.ADMIN_BOOTSTRAP_PASSWORD ?? (nodeEnv === "production" ? "" : "local-admin-password");
+  const adminBootstrapPassword =
+    env.ADMIN_BOOTSTRAP_PASSWORD ?? (nodeEnv === "production" ? `disabled-${randomUUID()}` : "local-admin-password");
   const adminSessionTtlMinutes = Number(env.ADMIN_SESSION_TTL_MINUTES ?? 480);
   const webhookRateLimitPerMinute = Number(env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? 60);
   const approvalRateLimitPerMinute = Number(env.APPROVAL_RATE_LIMIT_PER_MINUTE ?? 30);
@@ -65,24 +71,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     throw new Error("LOG_LEVEL must be one of debug, info, warn, or error.");
   }
 
-  if (!bmsWebhookSecret) {
-    throw new Error("BMS_WEBHOOK_SECRET is required.");
-  }
-
   if (!Number.isInteger(dattoRmmTimeoutMs) || dattoRmmTimeoutMs <= 0) {
     throw new Error("DATTO_RMM_TIMEOUT_MS must be a positive integer.");
-  }
-
-  if (!automationCallbackSecret) {
-    throw new Error("AUTOMATION_CALLBACK_SECRET is required.");
   }
 
   if (!Number.isInteger(automationJobTimeoutMinutes) || automationJobTimeoutMinutes <= 0) {
     throw new Error("AUTOMATION_JOB_TIMEOUT_MINUTES must be a positive integer.");
   }
 
-  if (!adminBootstrapEmail || !adminBootstrapPassword) {
-    throw new Error("ADMIN_BOOTSTRAP_EMAIL and ADMIN_BOOTSTRAP_PASSWORD are required.");
+  if (!adminBootstrapEmail) {
+    throw new Error("ADMIN_BOOTSTRAP_EMAIL is required.");
   }
 
   if (!Number.isInteger(adminSessionTtlMinutes) || adminSessionTtlMinutes <= 0) {
@@ -113,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     dattoRmmTimeoutMs,
     automationCallbackBaseUrl: env.AUTOMATION_CALLBACK_BASE_URL ?? `http://${env.API_HOST ?? "127.0.0.1"}:${port}`,
     automationCallbackSecret,
+    approvalTokenSecret,
     automationJobTimeoutMinutes,
     bmsWritesEnabled: env.BMS_WRITES_ENABLED === "true",
     bmsQueueAutomationReview: env.BMS_QUEUE_AUTOMATION_REVIEW ?? "Automation Review",
@@ -140,4 +139,55 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     globalAutomationDisabled: env.GLOBAL_AUTOMATION_DISABLED === "true",
     dryRunOnly: env.DRY_RUN_ONLY === "true"
   };
+}
+
+export interface ConfigValidationResult {
+  ok: boolean;
+  code?: "missing_secret" | "missing_credentials";
+  message?: string;
+}
+
+export function validateWebhookConfig(config: Pick<ApiConfig, "bmsWebhookSecret">): ConfigValidationResult {
+  if (!config.bmsWebhookSecret) {
+    return {
+      ok: false,
+      code: "missing_secret",
+      message: "BMS webhook secret is not configured."
+    };
+  }
+  return { ok: true };
+}
+
+export function validateApprovalConfig(config: Pick<ApiConfig, "approvalTokenSecret">): ConfigValidationResult {
+  if (!config.approvalTokenSecret) {
+    return {
+      ok: false,
+      code: "missing_secret",
+      message: "Approval token secret is not configured."
+    };
+  }
+  return { ok: true };
+}
+
+export function validateDattoConfig(
+  config: Pick<ApiConfig, "dattoRmmExecutionEnabled" | "dattoRmmBaseUrl" | "dattoRmmApiKey" | "dattoRmmApiSecret" | "automationCallbackSecret">
+): ConfigValidationResult {
+  if (!config.automationCallbackSecret) {
+    return {
+      ok: false,
+      code: "missing_secret",
+      message: "Component callback secret is not configured."
+    };
+  }
+  if (!config.dattoRmmExecutionEnabled) {
+    return { ok: true };
+  }
+  if (!config.dattoRmmBaseUrl || !config.dattoRmmApiKey || !config.dattoRmmApiSecret) {
+    return {
+      ok: false,
+      code: "missing_credentials",
+      message: "Datto RMM credentials are not configured."
+    };
+  }
+  return { ok: true };
 }

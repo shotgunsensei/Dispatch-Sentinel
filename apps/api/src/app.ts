@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { ApprovalRequest } from "@dispatch-sentinel/shared";
-import type { ApiConfig } from "./config.js";
-import { loadConfig } from "./config.js";
+import type { ApiConfig, ConfigValidationResult } from "./config.js";
+import { loadConfig, validateApprovalConfig, validateDattoConfig, validateWebhookConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { createLogger } from "./logger.js";
 import { InMemoryAuditSink } from "./modules/audit/audit-sink.js";
@@ -30,6 +30,16 @@ export interface HealthResponse {
     queue: "ok" | "degraded";
     bmsAdapter: "ok";
     dattoRmmAdapter: "ok" | "dry_run";
+  };
+}
+
+export interface PublicHealthResponse {
+  ok: true;
+  service: "dispatch-sentinel-api";
+  environment: string;
+  config: {
+    bmsWebhookConfigured: boolean;
+    dattoExecutionEnabled: boolean;
   };
 }
 
@@ -135,6 +145,19 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
   return async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
 
+    if (request.method === "GET" && url.pathname === "/health") {
+      writeJson(response, 200, {
+        ok: true,
+        service: "dispatch-sentinel-api",
+        environment: config.nodeEnv,
+        config: {
+          bmsWebhookConfigured: validateWebhookConfig(config).ok,
+          dattoExecutionEnabled: config.dattoRmmExecutionEnabled
+        }
+      } satisfies PublicHealthResponse);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/healthz") {
       writeJson(response, 200, {
         status: "ok",
@@ -157,7 +180,7 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
       if (!checkRateLimit(request, response, dependencies, "approval", config.approvalRateLimitPerMinute)) {
         return;
       }
-      await handleApprovalRoute(request, response, url, dependencies, "approve");
+      await handleApprovalRoute(request, response, url, config, dependencies, "approve");
       return;
     }
 
@@ -165,7 +188,7 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
       if (!checkRateLimit(request, response, dependencies, "approval", config.approvalRateLimitPerMinute)) {
         return;
       }
-      await handleApprovalRoute(request, response, url, dependencies, "reject");
+      await handleApprovalRoute(request, response, url, config, dependencies, "reject");
       return;
     }
 
@@ -501,6 +524,15 @@ async function handleAutomationResult(
   dependencies: ApiDependencies,
   logger: Logger
 ) {
+  const dattoConfig = validateDattoConfig(config);
+  if (!dattoConfig.ok) {
+    logger.error("Automation result callback configuration missing", {
+      code: dattoConfig.code
+    });
+    writeConfigError(response, dattoConfig);
+    return;
+  }
+
   if (request.headers["x-dispatch-sentinel-component-secret"] !== config.automationCallbackSecret) {
     logger.warn("Automation result callback rejected", { reason: "invalid_secret" });
     writeJson(response, 401, { error: "unauthorized", message: "Invalid callback secret." });
@@ -524,9 +556,16 @@ async function handleApprovalRoute(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
+  config: ApiConfig,
   dependencies: ApiDependencies,
   action: "approve" | "reject"
 ) {
+  const approvalConfig = validateApprovalConfig(config);
+  if (!approvalConfig.ok) {
+    writeConfigError(response, approvalConfig);
+    return;
+  }
+
   const match = url.pathname.match(new RegExp(`^/${action}/([^/]+)(?:/confirm)?$`));
   const token = match?.[1] ? decodeURIComponent(match[1]) : "";
   const isConfirm = url.pathname.endsWith("/confirm");
@@ -666,6 +705,15 @@ async function handleBmsWebhook(
   logger: Logger,
   dependencies: ApiDependencies
 ) {
+  const webhookConfig = validateWebhookConfig(config);
+  if (!webhookConfig.ok) {
+    logger.error("BMS webhook configuration missing", {
+      code: webhookConfig.code
+    });
+    writeConfigError(response, webhookConfig);
+    return;
+  }
+
   const providedSecret = request.headers["x-dispatch-sentinel-secret"];
   if (providedSecret !== config.bmsWebhookSecret) {
     logger.warn("BMS webhook rejected", {
@@ -898,6 +946,14 @@ function writeJson(response: ServerResponse, statusCode: number, body: unknown) 
     "cache-control": "no-store"
   });
   response.end(JSON.stringify(body));
+}
+
+function writeConfigError(response: ServerResponse, validation: ConfigValidationResult) {
+  writeJson(response, 503, {
+    error: "configuration_error",
+    code: validation.code ?? "not_ready",
+    message: validation.message ?? "Required runtime configuration is missing."
+  });
 }
 
 const defaultConfig = loadConfig();

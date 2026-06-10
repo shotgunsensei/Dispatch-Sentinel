@@ -54,6 +54,55 @@ describe("API server", () => {
     });
   });
 
+  it("returns public health without BMS webhook configuration", async () => {
+    const fixture = await startTestApi({ config: { bmsWebhookSecret: null, nodeEnv: "production" } });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/health`);
+      const body = await response.json() as {
+        ok: boolean;
+        service: string;
+        environment: string;
+        config: { bmsWebhookConfigured: boolean; dattoExecutionEnabled: boolean };
+      };
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        ok: true,
+        service: "dispatch-sentinel-api",
+        environment: "production",
+        config: {
+          bmsWebhookConfigured: false,
+          dattoExecutionEnabled: false
+        }
+      });
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("does not return secret values in public health output", async () => {
+    const fixture = await startTestApi({
+      config: {
+        bmsWebhookSecret: "super-secret-bms-value",
+        automationCallbackSecret: "super-secret-callback-value",
+        approvalTokenSecret: "super-secret-approval-value"
+      }
+    });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/health`);
+      const text = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(text).not.toContain("super-secret-bms-value");
+      expect(text).not.toContain("super-secret-callback-value");
+      expect(text).not.toContain("super-secret-approval-value");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("rejects BMS webhooks with a missing or invalid secret", async () => {
     const fixture = await startTestApi();
 
@@ -69,6 +118,27 @@ describe("API server", () => {
 
       expect(missingSecret.status).toBe(401);
       expect(invalidSecret.status).toBe(401);
+      expect(fixture.auditSink.list()).toHaveLength(0);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("rejects BMS webhooks when BMS_WEBHOOK_SECRET is not configured", async () => {
+    const fixture = await startTestApi({ config: { bmsWebhookSecret: null } });
+
+    try {
+      const response = await postWebhook(fixture.port, "anything", {
+        eventType: "ticket.created",
+        ticketId: "BMS-1001"
+      });
+      const body = await response.json() as { error: string; code: string };
+
+      expect(response.status).toBe(503);
+      expect(body).toMatchObject({
+        error: "configuration_error",
+        code: "missing_secret"
+      });
       expect(fixture.auditSink.list()).toHaveLength(0);
     } finally {
       await fixture.stop();
@@ -366,6 +436,7 @@ function testConfig(overrides: Partial<ApiConfig> = {}): ApiConfig {
     dattoRmmTimeoutMs: 10000,
     automationCallbackBaseUrl: "http://127.0.0.1:4310",
     automationCallbackSecret: "callback-secret",
+    approvalTokenSecret: "approval-token-secret",
     automationJobTimeoutMinutes: 30,
     bmsWritesEnabled: true,
     bmsQueueAutomationReview: "Automation Review",
