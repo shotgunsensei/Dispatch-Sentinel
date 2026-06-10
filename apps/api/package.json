@@ -11,7 +11,7 @@
     "test": "vitest run src"
   },
   "dependencies": {
-    "@dispatch-sentinel/shared": "*"
+    "@dispatch-sentinel/shared": "file:../../packages/shared"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",

@@ -1,5 +1,14 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@dispatch-sentinel/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@dispatch-sentinel/shared/*": ["../../packages/shared/dist/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     "dist",

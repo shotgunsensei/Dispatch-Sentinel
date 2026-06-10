@@ -1394,7 +1394,8 @@ function parseTenantSettingsUpdate(payload: unknown): Partial<Omit<TenantSetting
       if (typeof value !== "string" && value !== null) {
         throw new Error(`${wireKey} must be a string or null.`);
       }
-      update[modelKey] = value;
+      const stringValue: string | null = value;
+      update[modelKey] = stringValue;
     }
   }
   return update;
