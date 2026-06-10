@@ -1,0 +1,16 @@
+{
+  "installCommand": "npm install",
+  "buildCommand": "npm run build:shared && npm run build:api:only",
+  "builds": [
+    {
+      "src": "apps/api/src/vercel.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "apps/api/src/vercel.ts"
+    }
+  ]
+}
