@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 export type AdminRole = "read_only" | "operator" | "admin";
 export type AdminPermission = "read" | "operate" | "admin";
@@ -28,7 +28,7 @@ export class AdminAuthService {
   private readonly users = new Map<string, AdminUser>();
   private readonly sessions = new Map<string, AdminSession>();
 
-  constructor(input: { email: string; password: string; role?: AdminRole; sessionTtlMinutes: number }) {
+  constructor(input: { email: string; password: string; role?: AdminRole; sessionTtlMinutes: number; setupToken?: string | null; sessionSecret?: string | null }) {
     const role = input.role ?? "admin";
     this.users.set(input.email.toLowerCase(), {
       id: "admin-bootstrap",
@@ -37,9 +37,13 @@ export class AdminAuthService {
       passwordHash: hashPassword(input.password)
     });
     this.sessionTtlMinutes = input.sessionTtlMinutes;
+    this.setupTokenHash = input.setupToken ? hashPassword(input.setupToken) : null;
+    this.sessionSecret = input.sessionSecret ?? null;
   }
 
   private readonly sessionTtlMinutes: number;
+  private readonly setupTokenHash: string | null;
+  private readonly sessionSecret: string | null;
 
   login(email: string, password: string, now = new Date()): AdminSession {
     const user = this.users.get(email.toLowerCase());
@@ -47,12 +51,28 @@ export class AdminAuthService {
       throw new Error("Invalid admin credentials.");
     }
 
-    const token = randomBytes(32).toString("base64url");
+    const token = this.createSessionToken();
     const session: AdminSession = {
       token,
       userId: user.id,
       email: user.email,
       role: user.role,
+      expiresAt: new Date(now.getTime() + this.sessionTtlMinutes * 60 * 1000).toISOString()
+    };
+    this.sessions.set(token, session);
+    return structuredClone(session);
+  }
+
+  loginWithSetupToken(setupToken: string, now = new Date()): AdminSession {
+    if (!this.setupTokenHash || !safeEqual(this.setupTokenHash, hashPassword(setupToken))) {
+      throw new Error("Invalid admin setup token.");
+    }
+    const token = this.createSessionToken();
+    const session: AdminSession = {
+      token,
+      userId: "admin-setup",
+      email: "setup-admin@dispatch.local",
+      role: "admin",
       expiresAt: new Date(now.getTime() + this.sessionTtlMinutes * 60 * 1000).toISOString()
     };
     this.sessions.set(token, session);
@@ -82,6 +102,19 @@ export class AdminAuthService {
       throw new Error("Admin role does not have permission for this action.");
     }
     return session;
+  }
+
+  isSetupConfigured(): boolean {
+    return Boolean(this.setupTokenHash && this.sessionSecret);
+  }
+
+  private createSessionToken(): string {
+    const nonce = randomBytes(32).toString("base64url");
+    if (!this.sessionSecret) {
+      return nonce;
+    }
+    const signature = createHmac("sha256", this.sessionSecret).update(nonce).digest("base64url");
+    return `${nonce}.${signature}`;
   }
 }
 

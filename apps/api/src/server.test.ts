@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { AddressInfo } from "node:net";
+import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiConfig } from "./config.js";
 import { createLogger } from "./logger.js";
@@ -17,6 +18,14 @@ import { AutomationRunRepository } from "./modules/automation/automation-runner.
 import { AutomationResultHandler } from "./modules/automation/result-handler.js";
 import { DryRunDattoRmmAdapter } from "./modules/datto-rmm/dry-run-adapter.js";
 import { TicketIntakeService } from "./modules/tickets/intake-service.js";
+import { SecretEncryptionService } from "./modules/security/encryption.js";
+import {
+  IntegrationTestRunRepository,
+  TenantAuditLogRepository,
+  TenantRepository,
+  TenantSecretRepository,
+  TenantSettingsRepository
+} from "./modules/tenants/tenant-store.js";
 
 const silentLogger = {
   debug: vi.fn(),
@@ -92,6 +101,9 @@ describe("API server", () => {
         ok: boolean;
         service: string;
         environment: string;
+        encryptionConfigured: boolean;
+        adminAuthConfigured: boolean;
+        dattoExecutionGloballyEnabled: boolean;
         config: { bmsWebhookConfigured: boolean; dattoExecutionEnabled: boolean };
       };
 
@@ -100,9 +112,15 @@ describe("API server", () => {
         ok: true,
         service: "dispatch-sentinel-api",
         environment: "test",
+        encryptionConfigured: true,
+        adminAuthConfigured: true,
+        dattoExecutionGloballyEnabled: false,
         config: {
           bmsWebhookConfigured: true,
-          dattoExecutionEnabled: false
+          dattoExecutionEnabled: false,
+          encryptionConfigured: true,
+          adminAuthConfigured: true,
+          dattoExecutionGloballyEnabled: false
         }
       });
     } finally {
@@ -119,6 +137,9 @@ describe("API server", () => {
         ok: boolean;
         service: string;
         environment: string;
+        encryptionConfigured: boolean;
+        adminAuthConfigured: boolean;
+        dattoExecutionGloballyEnabled: boolean;
         config: { bmsWebhookConfigured: boolean; dattoExecutionEnabled: boolean };
       };
 
@@ -127,9 +148,15 @@ describe("API server", () => {
         ok: true,
         service: "dispatch-sentinel-api",
         environment: "production",
+        encryptionConfigured: true,
+        adminAuthConfigured: true,
+        dattoExecutionGloballyEnabled: false,
         config: {
           bmsWebhookConfigured: false,
-          dattoExecutionEnabled: false
+          dattoExecutionEnabled: false,
+          encryptionConfigured: true,
+          adminAuthConfigured: true,
+          dattoExecutionGloballyEnabled: false
         }
       });
     } finally {
@@ -417,6 +444,112 @@ describe("API server", () => {
     }
   });
 
+  it("supports setup-token admin login and tenant creation", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const denied = await fetch(`http://127.0.0.1:${fixture.port}/api/admin/tenants`);
+      const token = await loginWithSetupToken(fixture.port);
+      const created = await adminFetch(fixture.port, token, "/api/admin/tenants", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Acme Support", slug: "acme-support" })
+      });
+      const body = await created.json() as { tenant: { id: string; slug: string; webhookUrl: string } };
+
+      expect(denied.status).toBe(401);
+      expect(created.status).toBe(201);
+      expect(body.tenant.slug).toBe("acme-support");
+      expect(body.tenant.webhookUrl).toBe("/api/webhooks/bms/acme-support");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("validates tenant slugs", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const token = await loginWithSetupToken(fixture.port);
+      const response = await adminFetch(fixture.port, token, "/api/admin/tenants", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Bad Slug Tenant", slug: "Bad Slug!" })
+      });
+
+      expect(response.status).toBe(400);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("stores tenant secrets encrypted and only returns status metadata", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const token = await loginWithSetupToken(fixture.port);
+      const tenant = await createTenant(fixture.port, token);
+      const response = await adminFetch(fixture.port, token, `/api/admin/tenants/${tenant.id}/secrets/bms_webhook_secret`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "tenant-webhook-secret" })
+      });
+      const status = await adminFetch(fixture.port, token, `/api/admin/tenants/${tenant.id}/secrets/status`);
+      const statusText = await status.text();
+
+      expect(response.status).toBe(200);
+      expect(status.status).toBe(200);
+      expect(statusText).not.toContain("tenant-webhook-secret");
+      expect(statusText).toContain("\"configured\":true");
+      expect(fixture.tenantSecretRepository.decrypt(tenant.id, "bms_webhook_secret")).toBe("tenant-webhook-secret");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("tenant BMS webhook rejects invalid tenants and missing or invalid secrets", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const token = await loginWithSetupToken(fixture.port);
+      const tenant = await createTenant(fixture.port, token);
+      const invalidTenant = await postTenantWebhook(fixture.port, "missing-tenant", "secret");
+      const missingSecret = await postTenantWebhook(fixture.port, tenant.slug, "secret");
+      await adminFetch(fixture.port, token, `/api/admin/tenants/${tenant.id}/secrets/bms_webhook_secret`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "tenant-webhook-secret" })
+      });
+      const invalidSecret = await postTenantWebhook(fixture.port, tenant.slug, "wrong-secret");
+
+      expect(invalidTenant.status).toBe(404);
+      expect(missingSecret.status).toBe(503);
+      expect(invalidSecret.status).toBe(401);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("tenant BMS webhook accepts valid per-tenant secrets", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const token = await loginWithSetupToken(fixture.port);
+      const tenant = await createTenant(fixture.port, token);
+      await adminFetch(fixture.port, token, `/api/admin/tenants/${tenant.id}/secrets/bms_webhook_secret`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "tenant-webhook-secret" })
+      });
+      const accepted = await postTenantWebhook(fixture.port, tenant.slug, "tenant-webhook-secret");
+
+      expect(accepted.status).toBe(202);
+      expect(fixture.tenantAuditLog.list(tenant.id).some((event) => event.type === "tenant.bms.webhook.accepted")).toBe(true);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("enforces read-only permissions", async () => {
     const fixture = await startTestApi({ role: "read_only" });
 
@@ -546,6 +679,9 @@ function testConfig(overrides: Partial<ApiConfig> = {}): ApiConfig {
     bmsPriorityUpdatesEnabled: false,
     adminBootstrapEmail: "admin@dispatch.local",
     adminBootstrapPassword: "local-admin-password",
+    adminSetupToken: "local-admin-setup-token",
+    adminSessionSecret: "local-admin-session-secret",
+    encryptionKey: randomBytes(32).toString("base64"),
     adminSessionTtlMinutes: 480,
     webhookRateLimitPerMinute: 60,
     approvalRateLimitPerMinute: 30,
@@ -604,6 +740,12 @@ async function startTestApi(options: { config?: Partial<ApiConfig>; role?: "read
     bmsAdapter,
     bmsWorkflow
   );
+  const encryptionService = new SecretEncryptionService(config.encryptionKey);
+  const tenantRepository = new TenantRepository();
+  const tenantSecretRepository = new TenantSecretRepository(encryptionService);
+  const tenantSettingsRepository = new TenantSettingsRepository();
+  const tenantAuditLog = new TenantAuditLogRepository();
+  const integrationTestRuns = new IntegrationTestRunRepository();
   const api = createApiServer(config, silentLogger, {
     auditSink,
     ticketIntakeService,
@@ -618,9 +760,17 @@ async function startTestApi(options: { config?: Partial<ApiConfig>; role?: "read
       email: config.adminBootstrapEmail,
       password: config.adminBootstrapPassword,
       role: options.role ?? "admin",
-      sessionTtlMinutes: config.adminSessionTtlMinutes
+      sessionTtlMinutes: config.adminSessionTtlMinutes,
+      setupToken: config.adminSetupToken,
+      sessionSecret: config.adminSessionSecret
     }),
-    rateLimiter: new InMemoryRateLimiter()
+    rateLimiter: new InMemoryRateLimiter(),
+    tenantRepository,
+    tenantSecretRepository,
+    tenantSettingsRepository,
+    tenantAuditLog,
+    integrationTestRuns,
+    encryptionService
   });
 
   api.server.listen(0, "127.0.0.1");
@@ -632,6 +782,8 @@ async function startTestApi(options: { config?: Partial<ApiConfig>; role?: "read
     auditSink,
     ticketIntakeService,
     bmsAdapter,
+    tenantSecretRepository,
+    tenantAuditLog,
     stop: api.stop
   };
 }
@@ -641,6 +793,16 @@ async function login(port: number): Promise<string> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: "admin@dispatch.local", password: "local-admin-password" })
+  });
+  const body = await response.json() as { token: string };
+  return body.token;
+}
+
+async function loginWithSetupToken(port: number): Promise<string> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/admin/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "local-admin-setup-token" })
   });
   const body = await response.json() as { token: string };
   return body.token;
@@ -670,6 +832,30 @@ async function postWebhook(port: number, secret: string | undefined, body: unkno
     headers,
     body: JSON.stringify(body)
   });
+}
+
+async function postTenantWebhook(port: number, tenantSlug: string, secret: string): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/api/webhooks/bms/${tenantSlug}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-dispatch-sentinel-secret": secret
+    },
+    body: JSON.stringify({
+      eventType: "ticket.created",
+      ticketId: "BMS-1001"
+    })
+  });
+}
+
+async function createTenant(port: number, token: string): Promise<{ id: string; slug: string }> {
+  const response = await adminFetch(port, token, "/api/admin/tenants", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Acme Support", slug: `acme-${crypto.randomUUID().slice(0, 8)}` })
+  });
+  const body = await response.json() as { tenant: { id: string; slug: string } };
+  return body.tenant;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

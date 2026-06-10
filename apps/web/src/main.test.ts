@@ -3,33 +3,36 @@ import { renderAdminDashboard } from "./main.js";
 
 describe("admin dashboard routes", () => {
   it("renders the overview route", () => {
-    const html = renderAdminDashboard("overview");
+    const html = renderAdminDashboard("dashboard");
 
-    expect(html).toContain("Phase 12 Admin");
-    expect(html).toContain("Tickets evaluated today");
-    expect(html).toContain("Escalated to human");
+    expect(html).toContain("Phase 13 Control Center");
+    expect(html).toContain("API status");
+    expect(html).toContain("Global Datto execution");
   });
 
-  it("renders ticket evaluations", () => {
-    const html = renderAdminDashboard("evaluations");
+  it("renders admin login", () => {
+    const html = renderAdminDashboard("login");
 
-    expect(html).toContain("Recent ticket evaluations");
-    expect(html).toContain("AUTO_ELIGIBLE_CONFIRM_CLIENT");
-    expect(html).toContain("Open audit");
+    expect(html).toContain("ADMIN_SETUP_TOKEN");
+    expect(html).toContain("Login");
+    expect(html).toContain("No registration");
   });
 
-  it("renders component registry controls", () => {
-    const html = renderAdminDashboard("components");
-
-    expect(html).toContain("Approved component registry");
-    expect(html).toContain("Enable | Disable | Edit");
-    expect(html).toContain("Allowed intents");
+  it("renders tenant list and create form", () => {
+    expect(renderAdminDashboard("tenants")).toContain("Tenant Registry");
+    expect(renderAdminDashboard("tenants")).toContain("BMS configured");
+    expect(renderAdminDashboard("tenant-new")).toContain("Create Tenant");
+    expect(renderAdminDashboard("tenant-new")).toContain("Tenant slug");
   });
 
-  it("renders approvals, runs, audit, and safety routes", () => {
-    expect(renderAdminDashboard("approvals")).toContain("Resend | Cancel");
-    expect(renderAdminDashboard("runs")).toContain("Automation runs");
-    expect(renderAdminDashboard("audit")).toContain("Export CSV");
-    expect(renderAdminDashboard("safety")).toContain("Server automation");
+  it("renders tenant integration control center", () => {
+    const html = renderAdminDashboard("tenant-detail");
+
+    expect(html).toContain("BMS Configuration");
+    expect(html).toContain("Webhook Configuration");
+    expect(html).toContain("Datto RMM Configuration");
+    expect(html).toContain("Execution Safety");
+    expect(html).toContain("Integration Test Console");
+    expect(html).not.toContain("tenant-webhook-secret");
   });
 });

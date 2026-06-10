@@ -19,6 +19,18 @@ import { AutomationResultHandler, validateResultPayload } from "./modules/automa
 import { DryRunDattoRmmAdapter } from "./modules/datto-rmm/dry-run-adapter.js";
 import { RealDattoRmmAdapter } from "./modules/datto-rmm/real-adapter.js";
 import { TicketIntakeService } from "./modules/tickets/intake-service.js";
+import { SecretEncryptionService } from "./modules/security/encryption.js";
+import {
+  IntegrationTestRunRepository,
+  TenantAuditLogRepository,
+  TenantRepository,
+  TenantSecretRepository,
+  TenantSettingsRepository,
+  allowedTenantSecretNames,
+  type IntegrationTestRun,
+  type TenantSecretName,
+  type TenantSettings
+} from "./modules/tenants/tenant-store.js";
 
 export interface HealthResponse {
   status: "ok";
@@ -37,9 +49,15 @@ export interface PublicHealthResponse {
   ok: true;
   service: "dispatch-sentinel-api";
   environment: string;
+  encryptionConfigured: boolean;
+  adminAuthConfigured: boolean;
+  dattoExecutionGloballyEnabled: boolean;
   config: {
     bmsWebhookConfigured: boolean;
     dattoExecutionEnabled: boolean;
+    encryptionConfigured: boolean;
+    adminAuthConfigured: boolean;
+    dattoExecutionGloballyEnabled: boolean;
   };
 }
 
@@ -67,6 +85,12 @@ export interface ApiDependencies {
   bmsWorkflow: BmsWorkflowService;
   adminAuthService: AdminAuthService;
   rateLimiter: InMemoryRateLimiter;
+  tenantRepository: TenantRepository;
+  tenantSecretRepository: TenantSecretRepository;
+  tenantSettingsRepository: TenantSettingsRepository;
+  tenantAuditLog: TenantAuditLogRepository;
+  integrationTestRuns: IntegrationTestRunRepository;
+  encryptionService: SecretEncryptionService;
 }
 
 export interface BmsWebhookPayload {
@@ -117,6 +141,7 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
     ? new RealDattoRmmAdapter(config, logger)
     : new DryRunDattoRmmAdapter(logger);
   const approvalService = new ApprovalService(approvalRepository, componentRegistry, new MockDattoDeviceAdapter(), bmsAdapter);
+  const encryptionService = new SecretEncryptionService(config.encryptionKey);
   return {
     auditSink,
     ticketIntakeService,
@@ -146,9 +171,17 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
       email: config.adminBootstrapEmail,
       password: config.adminBootstrapPassword,
       role: "admin",
-      sessionTtlMinutes: config.adminSessionTtlMinutes
+      sessionTtlMinutes: config.adminSessionTtlMinutes,
+      setupToken: config.adminSetupToken,
+      sessionSecret: config.adminSessionSecret
     }),
-    rateLimiter: new InMemoryRateLimiter()
+    rateLimiter: new InMemoryRateLimiter(),
+    tenantRepository: new TenantRepository(),
+    tenantSecretRepository: new TenantSecretRepository(encryptionService),
+    tenantSettingsRepository: new TenantSettingsRepository(),
+    tenantAuditLog: new TenantAuditLogRepository(),
+    integrationTestRuns: new IntegrationTestRunRepository(),
+    encryptionService
   };
 }
 
@@ -179,13 +212,21 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
+      const encryptionConfigured = dependencies.encryptionService.status().ok;
+      const adminAuthConfigured = dependencies.adminAuthService.isSetupConfigured();
       writeJson(response, 200, {
         ok: true,
         service: "dispatch-sentinel-api",
         environment: config.nodeEnv,
+        encryptionConfigured,
+        adminAuthConfigured,
+        dattoExecutionGloballyEnabled: config.dattoRmmExecutionEnabled,
         config: {
           bmsWebhookConfigured: validateWebhookConfig(config).ok,
-          dattoExecutionEnabled: config.dattoRmmExecutionEnabled
+          dattoExecutionEnabled: config.dattoRmmExecutionEnabled,
+          encryptionConfigured,
+          adminAuthConfigured,
+          dattoExecutionGloballyEnabled: config.dattoRmmExecutionEnabled
         }
       } satisfies PublicHealthResponse);
       return;
@@ -250,6 +291,16 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
       }
     }
 
+    if (url.pathname === "/api/admin/tenants") {
+      await handleTenantsCollection(request, response, dependencies);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/admin/tenants/")) {
+      await handleTenantAdminRoute(request, response, url, dependencies, config);
+      return;
+    }
+
     if (url.pathname === "/api/admin/components") {
       handleComponentList(request, response, dependencies);
       return;
@@ -302,6 +353,14 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
 
     if (url.pathname.startsWith("/api/admin/components/")) {
       await handleComponentDetail(request, response, url, dependencies, logger);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname.startsWith("/api/webhooks/bms/")) {
+      if (!checkRateLimit(request, response, dependencies, "webhook", config.webhookRateLimitPerMinute)) {
+        return;
+      }
+      await handleTenantBmsWebhook(request, response, url, logger, dependencies);
       return;
     }
 
@@ -374,10 +433,17 @@ function handleAdminOverview(request: IncomingMessage, response: ServerResponse,
 async function handleAdminLogin(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
   try {
     const payload = await readJsonBody(request);
-    if (!isRecord(payload) || typeof payload.email !== "string" || typeof payload.password !== "string") {
-      throw new Error("Email and password are required.");
+    if (!isRecord(payload)) {
+      throw new Error("Admin credentials are required.");
     }
-    const session = dependencies.adminAuthService.login(payload.email, payload.password);
+    const session =
+      typeof payload.token === "string"
+        ? dependencies.adminAuthService.loginWithSetupToken(payload.token)
+        : typeof payload.email === "string" && typeof payload.password === "string"
+          ? dependencies.adminAuthService.login(payload.email, payload.password)
+          : (() => {
+              throw new Error("Admin token or email/password is required.");
+            })();
     writeJson(response, 200, {
       token: session.token,
       role: session.role,
@@ -389,6 +455,280 @@ async function handleAdminLogin(request: IncomingMessage, response: ServerRespon
       message: error instanceof Error ? error.message : "Invalid admin credentials."
     });
   }
+}
+
+async function handleTenantsCollection(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
+  if (request.method === "GET") {
+    const tenants = dependencies.tenantRepository.list().map((tenant) => tenantSummary(tenant.id, dependencies));
+    writeJson(response, 200, { tenants });
+    return;
+  }
+  if (request.method !== "POST") {
+    writeJson(response, 405, { error: "method_not_allowed", message: "Only GET and POST are supported for tenants." });
+    return;
+  }
+  try {
+    const payload = await readJsonBody(request);
+    if (!isRecord(payload) || typeof payload.name !== "string" || typeof payload.slug !== "string") {
+      throw new Error("Tenant name and slug are required.");
+    }
+    const tenant = dependencies.tenantRepository.create({ name: payload.name, slug: payload.slug });
+    dependencies.tenantSettingsRepository.getOrCreate(tenant.id);
+    dependencies.tenantAuditLog.record({
+      tenantId: tenant.id,
+      type: "tenant.created",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "success",
+      metadata: { slug: tenant.slug }
+    });
+    writeJson(response, 201, { tenant: tenantSummary(tenant.id, dependencies) });
+  } catch (error) {
+    writeJson(response, 400, {
+      error: "validation_failed",
+      message: error instanceof Error ? error.message : "Tenant creation failed."
+    });
+  }
+}
+
+async function handleTenantAdminRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  dependencies: ApiDependencies,
+  config: ApiConfig
+) {
+  const path = url.pathname.replace("/api/admin/tenants/", "");
+  const [tenantId, second, third, fourth] = path.split("/").map((part) => decodeURIComponent(part));
+  if (!tenantId) {
+    writeJson(response, 400, { error: "bad_request", message: "Tenant id is required." });
+    return;
+  }
+
+  try {
+    dependencies.tenantRepository.getAny(tenantId);
+  } catch (error) {
+    writeJson(response, 404, { error: "not_found", message: "Tenant not found." });
+    return;
+  }
+
+  if (!second) {
+    if (request.method === "GET") {
+      writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+      return;
+    }
+    if (request.method === "PATCH") {
+      try {
+        const payload = await readJsonBody(request);
+        if (!isRecord(payload)) {
+          throw new Error("Tenant update must be an object.");
+        }
+        const tenant = dependencies.tenantRepository.update(tenantId, {
+          name: typeof payload.name === "string" ? payload.name : undefined,
+          slug: typeof payload.slug === "string" ? payload.slug : undefined
+        });
+        writeJson(response, 200, { tenant: tenantSummary(tenant.id, dependencies) });
+      } catch (error) {
+        writeJson(response, 400, { error: "validation_failed", message: error instanceof Error ? error.message : "Tenant update failed." });
+      }
+      return;
+    }
+  }
+
+  if (request.method === "POST" && second === "disable") {
+    dependencies.tenantRepository.disable(tenantId);
+    writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+    return;
+  }
+
+  if (request.method === "POST" && second === "enable") {
+    dependencies.tenantRepository.enable(tenantId);
+    writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+    return;
+  }
+
+  if (second === "secrets") {
+    await handleTenantSecretsRoute(request, response, tenantId, third, fourth, dependencies);
+    return;
+  }
+
+  if (second === "settings") {
+    await handleTenantSettingsRoute(request, response, tenantId, dependencies);
+    return;
+  }
+
+  if (second === "tests") {
+    await handleTenantTestsRoute(request, response, tenantId, third, dependencies, config);
+    return;
+  }
+
+  writeJson(response, 404, { error: "not_found", message: "Tenant route not found." });
+}
+
+async function handleTenantSecretsRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  tenantId: string,
+  secretName: string | undefined,
+  action: string | undefined,
+  dependencies: ApiDependencies
+) {
+  if (request.method === "GET" && secretName === "status") {
+    writeJson(response, 200, { secrets: dependencies.tenantSecretRepository.status(tenantId) });
+    return;
+  }
+  if (!secretName || !isAllowedTenantSecretName(secretName)) {
+    writeJson(response, 400, { error: "bad_request", message: "Allowed tenant secret name is required." });
+    return;
+  }
+  if (request.method === "PUT" && !action) {
+    await saveTenantSecret(request, response, tenantId, secretName, dependencies);
+    return;
+  }
+  if (request.method === "POST" && action === "rotate") {
+    await saveTenantSecret(request, response, tenantId, secretName, dependencies);
+    return;
+  }
+  if (request.method === "DELETE" && !action) {
+    dependencies.tenantSecretRepository.delete(tenantId, secretName);
+    writeJson(response, 200, { status: "deleted", secretName });
+    return;
+  }
+  writeJson(response, 405, { error: "method_not_allowed", message: "Unsupported tenant secret operation." });
+}
+
+async function saveTenantSecret(
+  request: IncomingMessage,
+  response: ServerResponse,
+  tenantId: string,
+  secretName: TenantSecretName,
+  dependencies: ApiDependencies
+) {
+  try {
+    const payload = await readJsonBody(request);
+    if (!isRecord(payload) || typeof payload.value !== "string") {
+      throw new Error("Secret value is required.");
+    }
+    dependencies.tenantSecretRepository.upsert(tenantId, secretName, payload.value);
+    dependencies.tenantAuditLog.record({
+      tenantId,
+      type: "tenant.secret.saved",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "success",
+      metadata: { secretName }
+    });
+    writeJson(response, 200, {
+      secret: dependencies.tenantSecretRepository.status(tenantId).find((secret) => secret.secretName === secretName)
+    });
+  } catch (error) {
+    writeJson(response, 400, {
+      error: "secret_save_failed",
+      message: error instanceof Error ? error.message : "Secret could not be saved."
+    });
+  }
+}
+
+async function handleTenantSettingsRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  tenantId: string,
+  dependencies: ApiDependencies
+) {
+  if (request.method === "GET") {
+    writeJson(response, 200, { settings: dependencies.tenantSettingsRepository.getOrCreate(tenantId) });
+    return;
+  }
+  if (request.method !== "PATCH") {
+    writeJson(response, 405, { error: "method_not_allowed", message: "Only GET and PATCH are supported for tenant settings." });
+    return;
+  }
+  try {
+    const payload = await readJsonBody(request);
+    const update = parseTenantSettingsUpdate(payload);
+    const settings = dependencies.tenantSettingsRepository.update(tenantId, update);
+    dependencies.tenantAuditLog.record({
+      tenantId,
+      type: "tenant.settings.updated",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "success",
+      metadata: { executionMode: settings.executionMode, dattoExecutionEnabled: settings.dattoExecutionEnabled }
+    });
+    writeJson(response, 200, { settings });
+  } catch (error) {
+    writeJson(response, 400, {
+      error: "validation_failed",
+      message: error instanceof Error ? error.message : "Tenant settings update failed."
+    });
+  }
+}
+
+async function handleTenantTestsRoute(
+  request: IncomingMessage,
+  response: ServerResponse,
+  tenantId: string,
+  testName: string | undefined,
+  dependencies: ApiDependencies,
+  config: ApiConfig
+) {
+  if (request.method === "GET" && !testName) {
+    writeJson(response, 200, { tests: dependencies.integrationTestRuns.list(tenantId) });
+    return;
+  }
+  if (request.method !== "POST" || !testName) {
+    writeJson(response, 405, { error: "method_not_allowed", message: "Use POST for tenant integration tests." });
+    return;
+  }
+  const run = runIntegrationTest(tenantId, testName, dependencies, config);
+  writeJson(response, 200, { test: run });
+}
+
+function runIntegrationTest(tenantId: string, testName: string, dependencies: ApiDependencies, config: ApiConfig): IntegrationTestRun {
+  const started = Date.now();
+  const settings = dependencies.tenantSettingsRepository.getOrCreate(tenantId);
+  let status: IntegrationTestRun["status"] = "dry_run";
+  let message = "Dry-run test completed without external API calls.";
+
+  if (testName.startsWith("bms-")) {
+    const hasBmsBaseUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "bms_api_base_url"));
+    status = hasBmsBaseUrl ? "dry_run" : "failed";
+    message = hasBmsBaseUrl ? "BMS integration dry-run prerequisites are configured." : "BMS base URL is not configured.";
+  } else if (testName.startsWith("datto-")) {
+    const hasDattoUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "datto_rmm_api_url"));
+    const liveAllowed = config.dattoRmmExecutionEnabled && settings.dattoExecutionEnabled && settings.executionMode === "live";
+    status = hasDattoUrl ? "dry_run" : "failed";
+    message = hasDattoUrl
+      ? `Datto RMM ${liveAllowed ? "read test allowed by flags" : "dry-run only; live execution remains disabled"}.`
+      : "Datto RMM API URL is not configured.";
+  } else if (testName === "classifier-sample" || testName === "device-match-sample") {
+    status = "passed";
+    message = "Local sample test completed.";
+  } else {
+    status = "failed";
+    message = "Unknown integration test.";
+  }
+
+  const run = dependencies.integrationTestRuns.record({
+    tenantId,
+    testType: testName,
+    status,
+    message,
+    durationMs: Date.now() - started
+  });
+  dependencies.tenantAuditLog.record({
+    tenantId,
+    type: "tenant.integration_test.completed",
+    ticketId: null,
+    deviceUid: null,
+    componentId: null,
+    outcome: status === "failed" ? "error" : "success",
+    metadata: { testType: testName, status }
+  });
+  return run;
 }
 
 function handleTicketEvaluations(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
@@ -792,6 +1132,101 @@ async function handleBmsWebhook(
   });
 }
 
+async function handleTenantBmsWebhook(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  logger: Logger,
+  dependencies: ApiDependencies
+) {
+  const tenantSlug = decodeURIComponent(url.pathname.replace("/api/webhooks/bms/", ""));
+  let tenant;
+  try {
+    tenant = dependencies.tenantRepository.getBySlug(tenantSlug);
+  } catch {
+    writeJson(response, 404, { error: "not_found", message: "Tenant webhook endpoint was not found." });
+    return;
+  }
+
+  if (tenant.status !== "active") {
+    dependencies.tenantAuditLog.record({
+      tenantId: tenant.id,
+      type: "tenant.bms.webhook.rejected",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "rejected",
+      metadata: { reason: "tenant_inactive" }
+    });
+    writeJson(response, 403, { error: "tenant_inactive", message: "Tenant is not active." });
+    return;
+  }
+
+  const expectedSecret = dependencies.tenantSecretRepository.decrypt(tenant.id, "bms_webhook_secret");
+  if (!expectedSecret) {
+    dependencies.tenantAuditLog.record({
+      tenantId: tenant.id,
+      type: "tenant.bms.webhook.rejected",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "rejected",
+      metadata: { reason: "secret_not_configured" }
+    });
+    writeJson(response, 503, { error: "configuration_error", message: "Tenant BMS webhook secret is not configured." });
+    return;
+  }
+
+  if (request.headers["x-dispatch-sentinel-secret"] !== expectedSecret) {
+    dependencies.tenantAuditLog.record({
+      tenantId: tenant.id,
+      type: "tenant.bms.webhook.rejected",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "rejected",
+      metadata: { reason: "invalid_secret" }
+    });
+    logger.warn("Tenant BMS webhook rejected", { tenantId: tenant.id, reason: "invalid_secret" });
+    writeJson(response, 401, { error: "unauthorized", message: "Invalid webhook secret." });
+    return;
+  }
+
+  let payload: BmsWebhookPayload;
+  try {
+    payload = parseBmsWebhookPayload(await readJsonBody(request));
+  } catch (error) {
+    dependencies.tenantAuditLog.record({
+      tenantId: tenant.id,
+      type: "tenant.bms.webhook.rejected",
+      ticketId: null,
+      deviceUid: null,
+      componentId: null,
+      outcome: "error",
+      metadata: { reason: "invalid_payload" }
+    });
+    writeJson(response, 400, { error: "bad_request", message: "Invalid BMS webhook payload." });
+    return;
+  }
+
+  dependencies.tenantAuditLog.record({
+    tenantId: tenant.id,
+    type: "tenant.bms.webhook.accepted",
+    ticketId: payload.ticketId,
+    deviceUid: null,
+    componentId: null,
+    outcome: "success",
+    metadata: { eventType: payload.eventType }
+  });
+  void dependencies.ticketIntakeService.enqueueTicketEvaluation(payload.ticketId, payload.eventType);
+  writeJson(response, 202, {
+    status: "accepted",
+    tenantId: tenant.id,
+    ticketId: payload.ticketId,
+    eventType: payload.eventType
+  });
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -915,6 +1350,56 @@ function parseSafetySettingsUpdate(payload: unknown): AdminSafetySettingsUpdate 
   return update;
 }
 
+function parseTenantSettingsUpdate(payload: unknown): Partial<Omit<TenantSettings, "tenantId" | "updatedAt">> {
+  if (!isRecord(payload)) {
+    throw new Error("Tenant settings update must be an object.");
+  }
+  const update: Partial<Omit<TenantSettings, "tenantId" | "updatedAt">> = {};
+  if ("execution_mode" in payload) {
+    if (payload.execution_mode !== "dry_run" && payload.execution_mode !== "live") {
+      throw new Error("execution_mode must be dry_run or live.");
+    }
+    update.executionMode = payload.execution_mode;
+  }
+  if ("datto_execution_enabled" in payload) {
+    if (typeof payload.datto_execution_enabled !== "boolean") {
+      throw new Error("datto_execution_enabled must be boolean.");
+    }
+    update.dattoExecutionEnabled = payload.datto_execution_enabled;
+  }
+  if ("server_automation_enabled" in payload) {
+    if (typeof payload.server_automation_enabled !== "boolean") {
+      throw new Error("server_automation_enabled must be boolean.");
+    }
+    update.serverAutomationEnabled = payload.server_automation_enabled;
+  }
+  if ("max_runs_per_device_per_day" in payload) {
+    if (typeof payload.max_runs_per_device_per_day !== "number") {
+      throw new Error("max_runs_per_device_per_day must be a number.");
+    }
+    update.maxRunsPerDevicePerDay = payload.max_runs_per_device_per_day;
+  }
+  for (const [wireKey, modelKey] of [
+    ["bms_default_queue", "bmsDefaultQueue"],
+    ["bms_automation_review_queue", "bmsAutomationReviewQueue"],
+    ["bms_human_review_queue", "bmsHumanReviewQueue"],
+    ["bms_security_queue", "bmsSecurityQueue"],
+    ["bms_status_awaiting_confirmation", "bmsStatusAwaitingConfirmation"],
+    ["bms_status_automation_running", "bmsStatusAutomationRunning"],
+    ["bms_status_needs_qa", "bmsStatusNeedsQa"],
+    ["bms_status_escalated", "bmsStatusEscalated"]
+  ] as const) {
+    if (wireKey in payload) {
+      const value = payload[wireKey];
+      if (typeof value !== "string" && value !== null) {
+        throw new Error(`${wireKey} must be a string or null.`);
+      }
+      update[modelKey] = value;
+    }
+  }
+  return update;
+}
+
 function adminPermissionFor(request: IncomingMessage, url: URL): AdminPermission {
   if (request.method === "GET") {
     return "read";
@@ -966,6 +1451,29 @@ function healthChecks(config: ApiConfig, dependencies: ApiDependencies): HealthR
     bmsAdapter: "ok",
     dattoRmmAdapter: config.dattoRmmExecutionEnabled ? "ok" : "dry_run"
   };
+}
+
+function tenantSummary(tenantId: string, dependencies: ApiDependencies) {
+  const tenant = dependencies.tenantRepository.getAny(tenantId);
+  const secrets = dependencies.tenantSecretRepository.status(tenantId);
+  const settings = dependencies.tenantSettingsRepository.getOrCreate(tenantId);
+  const tests = dependencies.integrationTestRuns.list(tenantId);
+  const configured = (name: TenantSecretName) => secrets.find((secret) => secret.secretName === name)?.configured ?? false;
+  return {
+    ...tenant,
+    webhookUrl: `/api/webhooks/bms/${tenant.slug}`,
+    configuration: {
+      bmsConfigured: configured("bms_api_base_url") && configured("bms_api_secret"),
+      bmsWebhookConfigured: configured("bms_webhook_secret"),
+      dattoConfigured: configured("datto_rmm_api_url") && configured("datto_rmm_api_key") && configured("datto_rmm_api_secret")
+    },
+    executionMode: settings.executionMode,
+    lastTestStatus: tests.at(-1)?.status ?? null
+  };
+}
+
+function isAllowedTenantSecretName(secretName: string): secretName is TenantSecretName {
+  return allowedTenantSecretNames.includes(secretName as TenantSecretName);
 }
 
 function redactApproval(approval: ApprovalRequest) {

@@ -8,26 +8,94 @@ import type {
   TenantUserRole
 } from "@dispatch-sentinel/shared";
 import { ComponentRegistryRepository, mvpComponentRegistrySeed } from "../component-registry/registry.js";
+import type { EncryptedSecretValue, SecretEncryptionService } from "../security/encryption.js";
 
 export interface TenantCreateInput {
-  id: string;
+  id?: string;
   name: string;
   slug: string;
   now?: Date;
+}
+
+export type TenantSecretName =
+  | "bms_api_base_url"
+  | "bms_api_username"
+  | "bms_api_secret"
+  | "bms_webhook_secret"
+  | "datto_rmm_api_url"
+  | "datto_rmm_api_key"
+  | "datto_rmm_api_secret"
+  | "approval_token_secret"
+  | "component_callback_secret";
+
+export const allowedTenantSecretNames: TenantSecretName[] = [
+  "bms_api_base_url",
+  "bms_api_username",
+  "bms_api_secret",
+  "bms_webhook_secret",
+  "datto_rmm_api_url",
+  "datto_rmm_api_key",
+  "datto_rmm_api_secret",
+  "approval_token_secret",
+  "component_callback_secret"
+];
+
+export interface TenantSecretRecord extends EncryptedSecretValue {
+  tenantId: string;
+  secretName: TenantSecretName;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantSecretStatus {
+  secretName: TenantSecretName;
+  configured: boolean;
+  keyVersion: string | null;
+  lastFour: string | null;
+  updatedAt: string | null;
+}
+
+export interface TenantSettings {
+  tenantId: string;
+  executionMode: "dry_run" | "live";
+  dattoExecutionEnabled: boolean;
+  serverAutomationEnabled: boolean;
+  maxRunsPerDevicePerDay: number;
+  bmsDefaultQueue: string | null;
+  bmsAutomationReviewQueue: string | null;
+  bmsHumanReviewQueue: string | null;
+  bmsSecurityQueue: string | null;
+  bmsStatusAwaitingConfirmation: string | null;
+  bmsStatusAutomationRunning: string | null;
+  bmsStatusNeedsQa: string | null;
+  bmsStatusEscalated: string | null;
+  updatedAt: string;
+}
+
+export interface IntegrationTestRun {
+  id: string;
+  tenantId: string;
+  testType: string;
+  status: "passed" | "failed" | "dry_run";
+  message: string;
+  durationMs: number;
+  createdAt: string;
 }
 
 export class TenantRepository {
   private readonly tenants = new Map<string, Tenant>();
 
   create(input: TenantCreateInput): Tenant {
-    if (this.tenants.has(input.id)) {
+    const slug = normalizeSlug(input.slug);
+    const id = input.id ?? `tenant-${slug}`;
+    if (this.tenants.has(id) || [...this.tenants.values()].some((tenant) => tenant.slug === slug)) {
       throw new Error("Tenant already exists.");
     }
     const now = (input.now ?? new Date()).toISOString();
     const tenant: Tenant = {
-      id: input.id,
-      name: input.name,
-      slug: input.slug,
+      id,
+      name: validateTenantName(input.name),
+      slug,
       status: "active",
       createdAt: now,
       updatedAt: now
@@ -44,15 +112,147 @@ export class TenantRepository {
     return structuredClone(tenant);
   }
 
+  getAny(tenantId: string): Tenant {
+    const tenant = this.tenants.get(tenantId);
+    if (!tenant) {
+      throw new Error("Tenant not found.");
+    }
+    return structuredClone(tenant);
+  }
+
+  getBySlug(slug: string): Tenant {
+    const normalized = normalizeSlug(slug);
+    const tenant = [...this.tenants.values()].find((candidate) => candidate.slug === normalized);
+    if (!tenant) {
+      throw new Error("Tenant not found.");
+    }
+    return structuredClone(tenant);
+  }
+
+  update(tenantId: string, input: Partial<Pick<Tenant, "name" | "slug">>, now = new Date()): Tenant {
+    const tenant = this.getAny(tenantId);
+    const updated: Tenant = {
+      ...tenant,
+      name: input.name === undefined ? tenant.name : validateTenantName(input.name),
+      slug: input.slug === undefined ? tenant.slug : normalizeSlug(input.slug),
+      updatedAt: now.toISOString()
+    };
+    if ([...this.tenants.values()].some((candidate) => candidate.id !== tenantId && candidate.slug === updated.slug)) {
+      throw new Error("Tenant slug already exists.");
+    }
+    this.tenants.set(tenantId, structuredClone(updated));
+    return structuredClone(updated);
+  }
+
   disable(tenantId: string, now = new Date()): Tenant {
-    const tenant = this.get(tenantId);
+    const tenant = this.getAny(tenantId);
     const updated = { ...tenant, status: "disabled" as const, updatedAt: now.toISOString() };
+    this.tenants.set(tenantId, structuredClone(updated));
+    return structuredClone(updated);
+  }
+
+  enable(tenantId: string, now = new Date()): Tenant {
+    const tenant = this.getAny(tenantId);
+    const updated = { ...tenant, status: "active" as const, updatedAt: now.toISOString() };
     this.tenants.set(tenantId, structuredClone(updated));
     return structuredClone(updated);
   }
 
   list(): Tenant[] {
     return [...this.tenants.values()].map((tenant) => structuredClone(tenant));
+  }
+}
+
+export class TenantSecretRepository {
+  private readonly secrets = new Map<string, TenantSecretRecord>();
+
+  constructor(private readonly encryption: SecretEncryptionService) {}
+
+  upsert(tenantId: string, secretName: TenantSecretName, value: string, now = new Date()): TenantSecretRecord {
+    assertAllowedSecret(secretName);
+    if (!value.trim()) {
+      throw new Error("Secret value is required.");
+    }
+    const existing = this.secrets.get(secretKey(tenantId, secretName));
+    const timestamp = now.toISOString();
+    const encrypted = this.encryption.encrypt(value);
+    const record: TenantSecretRecord = {
+      tenantId,
+      secretName,
+      ...encrypted,
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.secrets.set(secretKey(tenantId, secretName), structuredClone(record));
+    return structuredClone(record);
+  }
+
+  delete(tenantId: string, secretName: TenantSecretName): boolean {
+    assertAllowedSecret(secretName);
+    return this.secrets.delete(secretKey(tenantId, secretName));
+  }
+
+  decrypt(tenantId: string, secretName: TenantSecretName): string | null {
+    const secret = this.secrets.get(secretKey(tenantId, secretName));
+    return secret ? this.encryption.decrypt(secret) : null;
+  }
+
+  status(tenantId: string): TenantSecretStatus[] {
+    return allowedTenantSecretNames.map((secretName) => {
+      const secret = this.secrets.get(secretKey(tenantId, secretName));
+      return {
+        secretName,
+        configured: Boolean(secret),
+        keyVersion: secret?.keyVersion ?? null,
+        lastFour: secret?.lastFour ?? null,
+        updatedAt: secret?.updatedAt ?? null
+      };
+    });
+  }
+}
+
+export class TenantSettingsRepository {
+  private readonly settings = new Map<string, TenantSettings>();
+
+  getOrCreate(tenantId: string, now = new Date()): TenantSettings {
+    const existing = this.settings.get(tenantId);
+    if (existing) {
+      return structuredClone(existing);
+    }
+    const created = defaultTenantSettings(tenantId, now);
+    this.settings.set(tenantId, structuredClone(created));
+    return structuredClone(created);
+  }
+
+  update(tenantId: string, update: Partial<Omit<TenantSettings, "tenantId" | "updatedAt">>, now = new Date()): TenantSettings {
+    const current = this.getOrCreate(tenantId, now);
+    const next: TenantSettings = {
+      ...current,
+      ...update,
+      serverAutomationEnabled: update.serverAutomationEnabled ?? current.serverAutomationEnabled,
+      updatedAt: now.toISOString()
+    };
+    validateTenantSettings(next);
+    this.settings.set(tenantId, structuredClone(next));
+    return structuredClone(next);
+  }
+}
+
+export class IntegrationTestRunRepository {
+  private readonly runs: IntegrationTestRun[] = [];
+
+  record(run: Omit<IntegrationTestRun, "id" | "createdAt">, now = new Date()): IntegrationTestRun {
+    const created: IntegrationTestRun = {
+      ...run,
+      id: crypto.randomUUID(),
+      createdAt: now.toISOString()
+    };
+    this.runs.push(structuredClone(created));
+    return structuredClone(created);
+  }
+
+  list(tenantId: string): IntegrationTestRun[] {
+    return this.runs.filter((run) => run.tenantId === tenantId).map((run) => structuredClone(run));
   }
 }
 
@@ -168,6 +368,63 @@ function validateExecutionSettings(settings: TenantExecutionSettings): void {
   }
   if (settings.allowedAccounts.some((account) => settings.blockedAccounts.includes(account))) {
     throw new Error("An account cannot be both allowed and blocked for the same tenant.");
+  }
+}
+
+function validateTenantName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length < 2) {
+    throw new Error("Tenant name is required.");
+  }
+  return trimmed;
+}
+
+export function normalizeSlug(slug: string): string {
+  const normalized = slug.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/.test(normalized)) {
+    throw new Error("Tenant slug must be 3-64 characters using lowercase letters, numbers, and dashes.");
+  }
+  return normalized;
+}
+
+function assertAllowedSecret(secretName: string): asserts secretName is TenantSecretName {
+  if (!allowedTenantSecretNames.includes(secretName as TenantSecretName)) {
+    throw new Error("Secret name is not allowed.");
+  }
+}
+
+function secretKey(tenantId: string, secretName: TenantSecretName): string {
+  return `${tenantId}:${secretName}`;
+}
+
+function defaultTenantSettings(tenantId: string, now: Date): TenantSettings {
+  return {
+    tenantId,
+    executionMode: "dry_run",
+    dattoExecutionEnabled: false,
+    serverAutomationEnabled: false,
+    maxRunsPerDevicePerDay: 2,
+    bmsDefaultQueue: null,
+    bmsAutomationReviewQueue: "Automation Review",
+    bmsHumanReviewQueue: "Human Review",
+    bmsSecurityQueue: "Security",
+    bmsStatusAwaitingConfirmation: "Awaiting Client Confirmation",
+    bmsStatusAutomationRunning: "Automation Running",
+    bmsStatusNeedsQa: "Needs QA",
+    bmsStatusEscalated: "Escalated",
+    updatedAt: now.toISOString()
+  };
+}
+
+function validateTenantSettings(settings: TenantSettings): void {
+  if (settings.executionMode !== "dry_run" && settings.executionMode !== "live") {
+    throw new Error("executionMode must be dry_run or live.");
+  }
+  if (settings.serverAutomationEnabled) {
+    throw new Error("Server automation must remain disabled for this phase.");
+  }
+  if (!Number.isInteger(settings.maxRunsPerDevicePerDay) || settings.maxRunsPerDevicePerDay < 0) {
+    throw new Error("maxRunsPerDevicePerDay must be a non-negative integer.");
   }
 }
 

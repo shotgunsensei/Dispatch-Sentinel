@@ -29,6 +29,21 @@ a {
   min-height: 100vh;
 }
 
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-panel {
+  width: min(100%, 460px);
+  padding: 28px;
+  border: 1px solid rgba(232, 238, 245, 0.12);
+  border-radius: 8px;
+  background: rgba(12, 18, 26, 0.92);
+}
+
 .sidebar {
   padding: 24px 18px;
   border-right: 1px solid rgba(232, 238, 245, 0.1);
@@ -220,7 +235,8 @@ td {
 }
 
 .filter-row,
-.settings-grid {
+.settings-grid,
+.toolbar {
   display: grid;
   gap: 12px;
 }
@@ -231,6 +247,21 @@ td {
 
 .settings-grid {
   grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.settings-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(150px, max-content));
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.muted {
+  color: #91a3b7;
+  font-size: 0.9rem;
 }
 
 input,

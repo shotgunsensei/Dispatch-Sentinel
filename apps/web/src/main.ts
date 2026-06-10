@@ -1,69 +1,36 @@
 import "./styles.css";
 
-type AdminRoute = "overview" | "evaluations" | "components" | "approvals" | "runs" | "audit" | "safety";
+type AdminRoute = "login" | "dashboard" | "tenants" | "tenant-new" | "tenant-detail";
 
 const routes: Array<{ id: AdminRoute; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "evaluations", label: "Ticket Evaluations" },
-  { id: "components", label: "Component Registry" },
-  { id: "approvals", label: "Approvals" },
-  { id: "runs", label: "Automation Runs" },
-  { id: "audit", label: "Audit Log" },
-  { id: "safety", label: "Safety Settings" }
+  { id: "dashboard", label: "Dashboard" },
+  { id: "tenants", label: "Tenants" },
+  { id: "tenant-new", label: "New Tenant" },
+  { id: "tenant-detail", label: "Tenant Control" }
 ];
 
-const metrics = [
-  ["Tickets evaluated today", "18"],
-  ["Auto-eligible", "5"],
-  ["Approvals pending", "3"],
-  ["Automations run", "4"],
-  ["Succeeded", "3"],
-  ["Failed", "1"],
-  ["Escalated to human", "9"]
+const tenants = [
+  ["Acme Support", "acme-support", "active", "configured", "configured", "dry_run", "passed"],
+  ["Northwind Clinic", "northwind-clinic", "active", "configured", "missing", "dry_run", "dry_run"],
+  ["Blue Harbor", "blue-harbor", "disabled", "missing", "missing", "dry_run", "failed"]
 ];
 
-const evaluations = [
-  ["BMS-1001", "AUTO_ELIGIBLE_CONFIRM_CLIENT", "95", "restart_print_spooler", "Restart Print Spooler", "ACCOUNTING-PC-04", "Safe workstation match"],
-  ["BMS-1002", "AUTO_ELIGIBLE_CONFIRM_CLIENT", "92", "run_gpupdate", "Run GPUpdate", "WS-FIN-22", "Policy request and hostname matched"],
-  ["BMS-1008", "ESCALATE_TO_HUMAN", "42", "unknown", "-", "-", "Unclear request"]
+const testRuns = [
+  ["bms-auth", "passed", "BMS prerequisites configured", "34ms", "2026-06-10 10:10"],
+  ["datto-list-devices", "dry_run", "Live execution disabled; dry-run only", "18ms", "2026-06-10 10:12"],
+  ["classifier-sample", "passed", "Local sample test completed", "6ms", "2026-06-10 10:14"]
 ];
 
-const components = [
-  ["Restart Print Spooler", "enabled", "low", "yes", "no", "restart_print_spooler", "workstation"],
-  ["Run GPUpdate", "enabled", "low", "yes", "no", "run_gpupdate", "workstation"],
-  ["Collect Workstation Diagnostics", "enabled", "low", "optional", "no", "collect_workstation_diagnostics", "workstation"],
-  ["Clear Safe Temp Files", "enabled", "medium", "yes", "no", "clear_safe_temp_files", "workstation"],
-  ["Restart User App Process", "enabled", "medium", "yes", "no", "restart_user_app_process", "workstation"],
-  ["Reboot Workstation", "enabled", "medium", "yes", "configurable", "reboot_workstation", "workstation"]
-];
-
-const approvals = [
-  ["BMS-1001", "pending", "ACCOUNTING-PC-04", "Restart Print Spooler", "alicia@example.test"],
-  ["BMS-1002", "approved", "WS-FIN-22", "Run GPUpdate", "ben@example.test"],
-  ["BMS-1008", "rejected", "-", "-", "hannah@example.test"],
-  ["BMS-1005", "expired", "-", "-", "elliot@example.test"]
-];
-
-const runs = [
-  ["running", "BMS-1002", "WS-FIN-22", "Run GPUpdate", "Datto job running", "2026-06-08 09:12", "-"],
-  ["completed", "BMS-1001", "ACCOUNTING-PC-04", "Restart Print Spooler", "Spooler restarted", "2026-06-08 08:45", "2026-06-08 08:46"],
-  ["failed", "BMS-1003", "LAPTOP-CARA-01", "Collect Workstation Diagnostics", "Device offline", "2026-06-08 08:20", "2026-06-08 08:51"]
-];
-
-const auditEvents = [
-  ["automation.run.started", "BMS-1001", "ACCOUNTING-PC-04", "component-restart-print-spooler", "success"],
-  ["automation.run.completed", "BMS-1001", "ACCOUNTING-PC-04", "component-restart-print-spooler", "success"],
-  ["automation.run.failed", "BMS-1003", "LAPTOP-CARA-01", "component-collect-workstation-diagnostics", "error"],
-  ["approval.resend_requested", "BMS-1002", "WS-FIN-22", "component-run-gpupdate", "success"]
-];
-
-export function renderAdminDashboard(route: AdminRoute = "overview"): string {
+export function renderAdminDashboard(route: AdminRoute = "dashboard"): string {
+  if (route === "login") {
+    return renderLogin();
+  }
   return `
     <section class="app-shell">
       <aside class="sidebar" aria-label="Admin navigation">
         <div class="brand">
           <span>Dispatch Sentinel</span>
-          <strong>Phase 12 Admin</strong>
+          <strong>Phase 13 Control Center</strong>
         </div>
         <nav>
           ${routes.map((item) => `<a href="#${item.id}" class="${item.id === route ? "active" : ""}">${item.label}</a>`).join("")}
@@ -72,10 +39,10 @@ export function renderAdminDashboard(route: AdminRoute = "overview"): string {
       <main class="content">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Automation Safety Console</p>
-            <h1>${routes.find((item) => item.id === route)?.label ?? "Overview"}</h1>
+            <p class="eyebrow">Tenant Setup & Integration Control</p>
+            <h1>${routes.find((item) => item.id === route)?.label ?? "Dashboard"}</h1>
           </div>
-          <a class="api-link" href="http://127.0.0.1:4310/healthz">API health</a>
+          <a class="api-link" href="/health">API health</a>
         </header>
         ${renderRoute(route)}
       </main>
@@ -83,20 +50,30 @@ export function renderAdminDashboard(route: AdminRoute = "overview"): string {
   `;
 }
 
+function renderLogin(): string {
+  return `
+    <main class="login-shell">
+      <section class="login-panel">
+        <p class="eyebrow">Admin Access</p>
+        <h1>Dispatch Sentinel</h1>
+        <form class="settings-grid single">
+          <label><span>ADMIN_SETUP_TOKEN</span><input type="password" autocomplete="current-password" placeholder="Enter setup token" /></label>
+          <button type="button">Login</button>
+          <p class="muted">No registration. Admin routes require a signed session token.</p>
+        </form>
+      </section>
+    </main>
+  `;
+}
+
 function renderRoute(route: AdminRoute): string {
   switch (route) {
-    case "evaluations":
-      return renderEvaluations();
-    case "components":
-      return renderComponents();
-    case "approvals":
-      return renderApprovals();
-    case "runs":
-      return renderRuns();
-    case "audit":
-      return renderAudit();
-    case "safety":
-      return renderSafety();
+    case "tenants":
+      return renderTenants();
+    case "tenant-new":
+      return renderTenantNew();
+    case "tenant-detail":
+      return renderTenantDetail();
     default:
       return renderOverview();
   }
@@ -105,77 +82,104 @@ function renderRoute(route: AdminRoute): string {
 function renderOverview(): string {
   return `
     <section class="metric-grid" aria-label="Dashboard overview">
-      ${metrics.map(([label, value]) => `<article><span>${label}</span><strong>${value}</strong></article>`).join("")}
+      ${[
+        ["API status", "online"],
+        ["Tenants", "3"],
+        ["Active tenants", "2"],
+        ["Recent webhooks", "12"],
+        ["Integration tests", "8"],
+        ["Dry-run/live", "dry-run"],
+        ["Global Datto execution", "disabled"]
+      ].map(([label, value]) => `<article><span>${label}</span><strong>${value}</strong></article>`).join("")}
     </section>
     <section class="split">
-      ${panel("Recent Decisions", table(["Ticket", "Decision", "Confidence", "Intent"], evaluations.map((row) => [row[0], row[1], row[2], row[3]])))}
-      ${panel("Safety Posture", `
-        <ul class="status-list">
-          <li><span>Global execution</span><strong>disabled</strong></li>
-          <li><span>Dry-run mode</span><strong>enabled</strong></li>
-          <li><span>Server automation</span><strong>disabled</strong></li>
-          <li><span>Allowed live components</span><strong>3</strong></li>
-        </ul>
-      `)}
+      ${panel("Recent Webhook Events", table(["Tenant", "Event", "Outcome"], [
+        ["acme-support", "tenant.bms.webhook.accepted", "success"],
+        ["northwind-clinic", "tenant.bms.webhook.rejected", "rejected"],
+        ["blue-harbor", "tenant.bms.webhook.rejected", "rejected"]
+      ]))}
+      ${panel("Recent Integration Tests", table(["Test", "Status", "Message"], testRuns.map((row) => [row[0], row[1], row[2]])))}
     </section>
   `;
 }
 
-function renderEvaluations(): string {
-  return panel(
-    "Recent ticket evaluations",
-    table(["Ticket", "Outcome", "Confidence", "Intent", "Component", "Device", "Reason", "Audit"], evaluations.map((row) => [...row, "Open audit"]))
-  );
-}
-
-function renderComponents(): string {
-  return panel(
-    "Approved component registry",
-    table(["Component", "State", "Risk", "Client confirm", "Tech approval", "Allowed intents", "Asset types", "Controls"], components.map((row) => [...row, "Enable | Disable | Edit"]))
-  );
-}
-
-function renderApprovals(): string {
-  return panel(
-    "Approval requests",
-    table(["Ticket", "Status", "Device", "Component", "Requester", "Safe actions"], approvals.map((row) => [...row, row[1] === "pending" ? "Resend | Cancel" : "View"]))
-  );
-}
-
-function renderRuns(): string {
-  return panel("Automation runs", table(["Status", "Ticket", "Device", "Component", "Result", "Started", "Completed"], runs));
-}
-
-function renderAudit(): string {
+function renderTenants(): string {
   return `
-    ${panel("Audit filters", `
-      <form class="filter-row">
-        <input placeholder="Ticket ID" aria-label="Ticket ID" />
-        <input placeholder="Device UID" aria-label="Device UID" />
-        <input placeholder="Component ID" aria-label="Component ID" />
-        <input placeholder="Action" aria-label="Action" />
-        <button type="button">Export JSON</button>
-        <button type="button">Export CSV</button>
-      </form>
+    ${panel("Tenant Registry", `
+      <div class="toolbar"><a class="api-link" href="#tenant-new">Create tenant</a></div>
+      ${table(["Name", "Slug", "Status", "BMS configured", "Datto configured", "Execution mode", "Last test"], tenants)}
     `)}
-    ${panel("Audit log", table(["Action", "Ticket", "Device", "Component", "Outcome"], auditEvents))}
   `;
 }
 
-function renderSafety(): string {
-  return panel(
-    "Safety settings",
-    `
+function renderTenantNew(): string {
+  return panel("Create Tenant", `
+    <form class="settings-grid">
+      <label><span>Tenant name</span><input placeholder="Acme Support" /></label>
+      <label><span>Tenant slug</span><input placeholder="acme-support" /></label>
+      <button type="button">Create</button>
+    </form>
+  `);
+}
+
+function renderTenantDetail(): string {
+  return `
+    ${panel("Overview", `
+      <ul class="status-list">
+        <li><span>Status</span><strong>active</strong></li>
+        <li><span>Webhook URL</span><strong>/api/webhooks/bms/acme-support</strong></li>
+        <li><span>Secret exposure</span><strong>hidden</strong></li>
+      </ul>
+    `)}
+    ${panel("BMS Configuration", secretForm([
+      ["BMS base URL", "bms_api_base_url"],
+      ["BMS username/client ID", "bms_api_username"],
+      ["BMS secret/password", "bms_api_secret"]
+    ], ["Test BMS auth", "Test fetch ticket by ID", "Test add internal note"]))}
+    ${panel("Webhook Configuration", `
       <div class="settings-grid">
-        <label><span>Global execution</span><select><option>disabled</option><option>enabled</option></select></label>
-        <label><span>Dry-run mode</span><select><option>enabled</option><option>disabled</option></select></label>
-        <label><span>Max runs per device/day</span><input type="number" min="0" value="2" /></label>
-        <label><span>Allowed accounts</span><textarea>acct-001</textarea></label>
-        <label><span>Blocked accounts</span><textarea>acct-999</textarea></label>
-        <div class="server-lock"><span>Server automation</span><strong>disabled</strong></div>
+        <label><span>Generated webhook URL</span><input readonly value="/api/webhooks/bms/acme-support" /></label>
+        <div class="server-lock"><span>Webhook secret</span><strong>configured</strong></div>
+        <button type="button">Generate / rotate secret</button>
+        <button type="button">Copy URL</button>
       </div>
-    `
-  );
+    `)}
+    ${panel("Datto RMM Configuration", secretForm([
+      ["Datto API URL", "datto_rmm_api_url"],
+      ["Datto API key", "datto_rmm_api_key"],
+      ["Datto API secret", "datto_rmm_api_secret"]
+    ], ["Test Datto auth", "Test list sites", "Test list devices"]))}
+    ${panel("Execution Safety", `
+      <div class="settings-grid">
+        <label><span>Execution mode</span><select><option>dry_run</option><option>live</option></select></label>
+        <label><span>Datto execution enabled</span><select><option>false</option><option>true</option></select></label>
+        <label><span>Server automation enabled</span><select disabled><option>false</option></select></label>
+        <label><span>Max runs per device/day</span><input type="number" min="0" value="2" /></label>
+      </div>
+      <p class="muted">Live execution requires both global and tenant execution flags. Datto quick jobs remain dry-run by default.</p>
+    `)}
+    ${panel("Integration Test Console", `
+      <div class="toolbar">
+        ${["bms-auth", "bms-fetch-ticket", "bms-add-internal-note", "datto-auth", "datto-list-sites", "datto-list-devices", "classifier-sample", "device-match-sample"].map((test) => `<button type="button">${test}</button>`).join("")}
+      </div>
+      ${table(["Test", "Status", "Message", "Duration", "Timestamp"], testRuns)}
+    `)}
+    ${panel("Recent Events", table(["Action", "Outcome", "Timestamp"], [
+      ["tenant.secret.saved", "success", "2026-06-10 10:00"],
+      ["tenant.integration_test.completed", "success", "2026-06-10 10:10"],
+      ["tenant.bms.webhook.accepted", "success", "2026-06-10 10:20"]
+    ]))}
+  `;
+}
+
+function secretForm(fields: string[][], actions: string[]): string {
+  return `
+    <div class="settings-grid">
+      ${fields.map(([label, name]) => `<label><span>${label}</span><input type="${name.includes("secret") || name.includes("key") ? "password" : "text"}" placeholder="${name}" /></label>`).join("")}
+      <button type="button">Save encrypted</button>
+      ${actions.map((action) => `<button type="button">${action}</button>`).join("")}
+    </div>
+  `;
 }
 
 function panel(title: string, body: string): string {
@@ -195,10 +199,14 @@ function table(headers: string[], rows: string[][]): string {
 
 function currentRoute(): AdminRoute {
   if (typeof window === "undefined") {
-    return "overview";
+    return "dashboard";
+  }
+  const path = window.location.pathname;
+  if (path === "/admin/login") {
+    return "login";
   }
   const hash = window.location.hash.replace("#", "") as AdminRoute;
-  return routes.some((route) => route.id === hash) ? hash : "overview";
+  return routes.some((route) => route.id === hash) ? hash : "dashboard";
 }
 
 function mount(): void {

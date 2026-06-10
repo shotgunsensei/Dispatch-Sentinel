@@ -35,6 +35,9 @@ export interface ApiConfig {
   bmsPriorityUpdatesEnabled: boolean;
   adminBootstrapEmail: string;
   adminBootstrapPassword: string;
+  adminSetupToken: string | null;
+  adminSessionSecret: string | null;
+  encryptionKey: string | null;
   adminSessionTtlMinutes: number;
   webhookRateLimitPerMinute: number;
   approvalRateLimitPerMinute: number;
@@ -58,6 +61,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const adminBootstrapEmail = env.ADMIN_BOOTSTRAP_EMAIL ?? "admin@dispatch.local";
   const adminBootstrapPassword =
     env.ADMIN_BOOTSTRAP_PASSWORD ?? (nodeEnv === "production" ? `disabled-${randomUUID()}` : "local-admin-password");
+  const adminSetupToken = env.ADMIN_SETUP_TOKEN ?? (nodeEnv === "production" ? null : "local-admin-setup-token");
+  const adminSessionSecret = env.ADMIN_SESSION_SECRET ?? (nodeEnv === "production" ? null : "local-admin-session-secret");
+  const encryptionKey = env.DISPATCH_SENTINEL_ENCRYPTION_KEY ?? null;
   const adminSessionTtlMinutes = Number(env.ADMIN_SESSION_TTL_MINUTES ?? 480);
   const webhookRateLimitPerMinute = Number(env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? 60);
   const approvalRateLimitPerMinute = Number(env.APPROVAL_RATE_LIMIT_PER_MINUTE ?? 30);
@@ -132,6 +138,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     bmsPriorityUpdatesEnabled: env.BMS_PRIORITY_UPDATES_ENABLED === "true",
     adminBootstrapEmail,
     adminBootstrapPassword,
+    adminSetupToken,
+    adminSessionSecret,
+    encryptionKey,
     adminSessionTtlMinutes,
     webhookRateLimitPerMinute,
     approvalRateLimitPerMinute,
