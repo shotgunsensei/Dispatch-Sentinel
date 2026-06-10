@@ -94,8 +94,13 @@ Expected response:
 - `API_HOST`: API bind host. Defaults to `127.0.0.1`.
 - `API_PORT`: API port. Defaults to `4310`.
 - `LOG_LEVEL`: structured logger threshold. Defaults to `info`.
-- `DATABASE_URL`: draft database connection string.
+- `DATABASE_URL`: Postgres connection string for production. In-memory fallback is local-development only when this is missing.
 - `BMS_WEBHOOK_SECRET`: shared secret for `POST /api/webhooks/bms`.
+- `ADMIN_SETUP_TOKEN`: one-time/shared setup token accepted by `POST /api/admin/login`.
+- `ADMIN_SESSION_SECRET`: signing secret for admin sessions.
+- `DISPATCH_SENTINEL_ENCRYPTION_KEY`: base64-encoded 32-byte AES-256-GCM encryption key for tenant secrets.
+- `DISPATCH_SENTINEL_ENCRYPTION_KEY_VERSION`: key version label stored with encrypted tenant secrets.
+- `ADMIN_ALLOWED_ORIGIN`: exact web admin origin allowed to call the API with credentials.
 - `DATTO_RMM_EXECUTION_ENABLED`: must be `true` before live Datto RMM quick jobs are allowed. Defaults to `false`.
 - `DATTO_RMM_TIMEOUT_MS`: real adapter scaffold timeout. Defaults to `10000`.
 - `AUTOMATION_CALLBACK_BASE_URL`: public callback base URL passed to Datto RMM components.
@@ -177,6 +182,14 @@ Repeated webhooks and repeated decision/run updates are idempotent and are logge
 
 Tenant-scoped repositories isolate BMS/Datto configuration, component registry entries, audit logs, execution settings, and user roles. Use `docs/deployment.md` and `docs/security-review.md` before any external rollout.
 
+## Phase 14 Production MVP Vertical Slice
+
+The production MVP flow is admin login, tenant creation, encrypted tenant secrets/settings, tenant-specific BMS webhook validation, ticket normalization/classification/policy evaluation, dry-run automation candidate creation, and GUI display. Live Datto RMM execution remains disabled by default and is not required for this slice.
+
+API readiness is exposed through `GET /health` with non-secret flags for database configuration/reachability, admin auth, encryption, and global Datto execution. Secret values are never returned by health routes.
+
+Tenant BMS webhooks use `POST /api/webhooks/bms/:tenantSlug` with `x-dispatch-sentinel-secret`. Invalid tenant, inactive tenant, missing secret, or invalid secret requests are rejected before payload processing.
+
 ## Verification
 
 ```powershell
@@ -198,3 +211,14 @@ Deploy the admin GUI as a separate Vercel project from the API backend.
 - Env: `NEXT_PUBLIC_API_BASE_URL`
 
 Do not use API/root build commands such as `npm run build:shared && npm run build:api:only` for the web project.
+
+Web env changes require rebuild/redeploy because `NEXT_PUBLIC_API_BASE_URL` is compiled into the Next.js client bundle. Set it to the deployed API URL, and set the API project's `ADMIN_ALLOWED_ORIGIN` to the deployed web URL so cookie-based admin auth can pass CORS.
+
+## API Vercel Project
+
+- Root Directory: repository root
+- Install Command: `npm install`
+- Build Command: `npm run build:shared && npm run build:api:only`
+- Required Env: `NODE_ENV`, `DATABASE_URL`, `ADMIN_SETUP_TOKEN`, `ADMIN_SESSION_SECRET`, `DISPATCH_SENTINEL_ENCRYPTION_KEY`, `DISPATCH_SENTINEL_ENCRYPTION_KEY_VERSION`, `DATTO_RMM_EXECUTION_ENABLED=false`, `ADMIN_ALLOWED_ORIGIN`
+
+Keep `DATTO_RMM_EXECUTION_ENABLED=false` unless explicitly approving live Datto RMM execution for the guarded Phase 7 allow-list.

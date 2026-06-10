@@ -117,6 +117,43 @@ button {
   margin-bottom: 20px;
 }
 
+.header-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border: 1px solid rgba(232, 238, 245, 0.14);
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.badge.good {
+  border-color: rgba(80, 210, 150, 0.35);
+  color: #8ff0bd;
+  background: rgba(80, 210, 150, 0.12);
+}
+
+.badge.warn {
+  border-color: rgba(255, 200, 87, 0.35);
+  color: #ffd47a;
+  background: rgba(255, 200, 87, 0.12);
+}
+
+.badge.bad {
+  border-color: rgba(255, 92, 112, 0.45);
+  color: #ff9aa8;
+  background: rgba(255, 92, 112, 0.14);
+}
+
 h1,
 h2,
 p {
@@ -315,6 +352,7 @@ label {
   }
 
   .topbar,
+  .header-status,
   .status-list li,
   .server-lock {
     align-items: stretch;

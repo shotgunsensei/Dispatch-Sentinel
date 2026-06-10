@@ -79,8 +79,8 @@ export class AdminAuthService {
     return structuredClone(session);
   }
 
-  authenticate(header: string | string[] | undefined, now = new Date()): AdminSession | null {
-    const token = parseBearerToken(header);
+  authenticate(header: string | string[] | undefined, now = new Date(), cookieHeader?: string | string[]): AdminSession | null {
+    const token = parseBearerToken(header) ?? parseSessionCookie(cookieHeader);
     if (!token) {
       return null;
     }
@@ -92,6 +92,12 @@ export class AdminAuthService {
       return null;
     }
     return structuredClone(session);
+  }
+
+  revoke(token: string | null): void {
+    if (token) {
+      this.sessions.delete(token);
+    }
   }
 
   requirePermission(session: AdminSession | null, permission: AdminPermission): AdminSession {
@@ -126,6 +132,15 @@ function parseBearerToken(header: string | string[] | undefined): string | null 
   const value = Array.isArray(header) ? header[0] : header;
   const match = value?.match(/^Bearer\s+(.+)$/i);
   return match?.[1] ?? null;
+}
+
+export function parseSessionCookie(header: string | string[] | undefined): string | null {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) {
+    return null;
+  }
+  const match = value.split(";").map((part) => part.trim()).find((part) => part.startsWith("dispatch_sentinel_admin="));
+  return match ? decodeURIComponent(match.slice("dispatch_sentinel_admin=".length)) : null;
 }
 
 function safeEqual(a: string, b: string): boolean {

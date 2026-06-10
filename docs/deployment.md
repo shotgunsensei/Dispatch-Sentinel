@@ -1,13 +1,13 @@
 # Deployment
 
-Dispatch Sentinel Phase 12 is prepared for productization after internal MVP success. Billing is not implemented.
+Dispatch Sentinel Phase 14 is the production MVP vertical slice for internal MSP validation. Billing is not implemented.
 
 ## Runtime
 
 - Node.js 20 or newer.
-- Build with `npm run build`.
-- Start the API with `node apps/api/dist/index.js`.
-- Serve the web bundle from `apps/web/dist` behind the same HTTPS boundary or a trusted static host.
+- API build: `npm run build:shared && npm run build:api:only`.
+- Web build from `apps/web`: `npm install && npm run build`.
+- Deploy API and web as separate Vercel projects.
 
 ## Required Environment
 
@@ -16,11 +16,23 @@ Dispatch Sentinel Phase 12 is prepared for productization after internal MVP suc
 - `API_PORT`
 - `LOG_LEVEL`
 - `DATABASE_URL`
+- `ADMIN_SETUP_TOKEN`
+- `ADMIN_SESSION_SECRET`
+- `DISPATCH_SENTINEL_ENCRYPTION_KEY`
+- `DISPATCH_SENTINEL_ENCRYPTION_KEY_VERSION`
+- `ADMIN_ALLOWED_ORIGIN`
+- `DATTO_RMM_EXECUTION_ENABLED=false`
 - `BMS_WEBHOOK_SECRET`
 - `AUTOMATION_CALLBACK_BASE_URL`
 - `AUTOMATION_CALLBACK_SECRET`
 - `ADMIN_BOOTSTRAP_EMAIL`
 - `ADMIN_BOOTSTRAP_PASSWORD`
+
+The web Vercel project requires:
+
+- `NEXT_PUBLIC_API_BASE_URL`
+
+Changing `NEXT_PUBLIC_API_BASE_URL` requires rebuilding/redeploying the web project. The API `ADMIN_ALLOWED_ORIGIN` value must exactly match the web deployment origin when using cookie-based admin sessions.
 
 ## Tenant Configuration
 
@@ -35,9 +47,10 @@ Each tenant must have:
 
 ## Rollout Checklist
 
-- Run migrations through `0013_phase12_tenants.sql`.
+- Run migrations through `0015_phase14_production_mvp_vertical_slice.sql`.
 - Seed tenants and per-tenant component registries.
 - Confirm `/healthz` reports API, database, queue, BMS adapter, and Datto RMM adapter checks.
+- Confirm `/health` returns readiness flags without secret values.
 - Keep `DATTO_RMM_EXECUTION_ENABLED=false` until production approval.
 - Keep tenant `dryRunOnly=true` during first tenant validation.
 - Verify audit export and component registry export for each tenant.

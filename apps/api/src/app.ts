@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { ApprovalRequest } from "@dispatch-sentinel/shared";
+import { Socket } from "node:net";
+import type { ApprovalRequest, Device, Ticket } from "@dispatch-sentinel/shared";
 import type { ApiConfig, ConfigValidationResult } from "./config.js";
 import { loadConfig, validateApprovalConfig, validateDattoConfig, validateWebhookConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { createLogger } from "./logger.js";
 import { InMemoryAuditSink } from "./modules/audit/audit-sink.js";
-import { AdminAuthService, type AdminPermission } from "./modules/admin/auth.js";
+import { AdminAuthService, parseSessionCookie, type AdminPermission } from "./modules/admin/auth.js";
 import { AdminDashboardService, AdminSafetySettingsRepository, toCsv, type AdminSafetySettingsUpdate } from "./modules/admin/dashboard.js";
 import { InMemoryRateLimiter } from "./modules/admin/rate-limit.js";
 import { ApprovalRequestRepository, ApprovalService } from "./modules/approvals/approval-service.js";
@@ -20,8 +21,13 @@ import { DryRunDattoRmmAdapter } from "./modules/datto-rmm/dry-run-adapter.js";
 import { RealDattoRmmAdapter } from "./modules/datto-rmm/real-adapter.js";
 import { TicketIntakeService } from "./modules/tickets/intake-service.js";
 import { SecretEncryptionService } from "./modules/security/encryption.js";
+import { classifyTicket } from "./modules/classifier/rule-based-classifier.js";
+import { evaluateTicketPolicy } from "./modules/automation/policy-engine.js";
 import {
+  DryRunAutomationCandidateRepository,
   IntegrationTestRunRepository,
+  TenantWebhookEventRepository,
+  TicketEvaluationRepository,
   TenantAuditLogRepository,
   TenantRepository,
   TenantSecretRepository,
@@ -49,6 +55,8 @@ export interface PublicHealthResponse {
   ok: true;
   service: "dispatch-sentinel-api";
   environment: string;
+  databaseConfigured: boolean;
+  databaseReachable: boolean;
   encryptionConfigured: boolean;
   adminAuthConfigured: boolean;
   dattoExecutionGloballyEnabled: boolean;
@@ -90,12 +98,24 @@ export interface ApiDependencies {
   tenantSettingsRepository: TenantSettingsRepository;
   tenantAuditLog: TenantAuditLogRepository;
   integrationTestRuns: IntegrationTestRunRepository;
+  tenantWebhookEvents: TenantWebhookEventRepository;
+  ticketEvaluations: TicketEvaluationRepository;
+  dryRunCandidates: DryRunAutomationCandidateRepository;
   encryptionService: SecretEncryptionService;
 }
 
 export interface BmsWebhookPayload {
   eventType: "ticket.created" | "ticket.updated";
   ticketId: string;
+}
+
+interface GenericBmsWebhookPayload {
+  event: "ticket.created" | "ticket.updated";
+  ticketId: string;
+  title: string;
+  details: string;
+  account: string;
+  contactEmail: string | null;
 }
 
 export interface DispatchSentinelApp {
@@ -141,7 +161,7 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
     ? new RealDattoRmmAdapter(config, logger)
     : new DryRunDattoRmmAdapter(logger);
   const approvalService = new ApprovalService(approvalRepository, componentRegistry, new MockDattoDeviceAdapter(), bmsAdapter);
-  const encryptionService = new SecretEncryptionService(config.encryptionKey);
+  const encryptionService = new SecretEncryptionService(config.encryptionKey, config.encryptionKeyVersion);
   return {
     auditSink,
     ticketIntakeService,
@@ -181,6 +201,9 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
     tenantSettingsRepository: new TenantSettingsRepository(),
     tenantAuditLog: new TenantAuditLogRepository(),
     integrationTestRuns: new IntegrationTestRunRepository(),
+    tenantWebhookEvents: new TenantWebhookEventRepository(),
+    ticketEvaluations: new TicketEvaluationRepository(),
+    dryRunCandidates: new DryRunAutomationCandidateRepository(),
     encryptionService
   };
 }
@@ -188,6 +211,14 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
 export function createRequestHandler(config: ApiConfig, logger: Logger, dependencies: ApiDependencies) {
   return async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", "http://localhost");
+    if (!applyCors(request, response, config)) {
+      return;
+    }
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
 
     if (request.method === "GET" && url.pathname === "/") {
       writeJson(response, 200, {
@@ -218,6 +249,8 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
         ok: true,
         service: "dispatch-sentinel-api",
         environment: config.nodeEnv,
+        databaseConfigured: Boolean(config.databaseUrl),
+        databaseReachable: await isDatabaseReachable(config),
         encryptionConfigured,
         adminAuthConfigured,
         dattoExecutionGloballyEnabled: config.dattoRmmExecutionEnabled,
@@ -270,7 +303,30 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
       if (!checkRateLimit(request, response, dependencies, "admin", config.adminRateLimitPerMinute)) {
         return;
       }
-      await handleAdminLogin(request, response, dependencies);
+      await handleAdminLogin(request, response, dependencies, config);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/admin/logout") {
+      const token = adminTokenFromRequest(request);
+      dependencies.adminAuthService.revoke(token);
+      response.setHeader("set-cookie", expiredAdminCookie(config));
+      writeJson(response, 200, { authenticated: false });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/admin/me") {
+      const session = dependencies.adminAuthService.authenticate(request.headers.authorization, new Date(), request.headers.cookie);
+      if (!session) {
+        writeJson(response, 401, { authenticated: false });
+        return;
+      }
+      writeJson(response, 200, {
+        authenticated: true,
+        email: session.email,
+        role: session.role,
+        expiresAt: session.expiresAt
+      });
       return;
     }
 
@@ -279,7 +335,7 @@ export function createRequestHandler(config: ApiConfig, logger: Logger, dependen
         return;
       }
       const permission = adminPermissionFor(request, url);
-      const session = dependencies.adminAuthService.authenticate(request.headers.authorization);
+      const session = dependencies.adminAuthService.authenticate(request.headers.authorization, new Date(), request.headers.cookie);
       try {
         dependencies.adminAuthService.requirePermission(session, permission);
       } catch (error) {
@@ -430,7 +486,7 @@ function handleAdminOverview(request: IncomingMessage, response: ServerResponse,
   writeJson(response, 200, { overview: dependencies.adminDashboardService.getOverview() });
 }
 
-async function handleAdminLogin(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
+async function handleAdminLogin(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies, config: ApiConfig) {
   try {
     const payload = await readJsonBody(request);
     if (!isRecord(payload)) {
@@ -444,6 +500,7 @@ async function handleAdminLogin(request: IncomingMessage, response: ServerRespon
           : (() => {
               throw new Error("Admin token or email/password is required.");
             })();
+    response.setHeader("set-cookie", adminSessionCookie(session.token, session.expiresAt, config));
     writeJson(response, 200, {
       token: session.token,
       role: session.role,
@@ -485,9 +542,10 @@ async function handleTenantsCollection(request: IncomingMessage, response: Serve
     });
     writeJson(response, 201, { tenant: tenantSummary(tenant.id, dependencies) });
   } catch (error) {
-    writeJson(response, 400, {
+    const message = error instanceof Error ? error.message : "Tenant creation failed.";
+    writeJson(response, message.includes("already exists") ? 409 : 400, {
       error: "validation_failed",
-      message: error instanceof Error ? error.message : "Tenant creation failed."
+      message
     });
   }
 }
@@ -563,6 +621,21 @@ async function handleTenantAdminRoute(
     return;
   }
 
+  if (request.method === "GET" && second === "webhook-events") {
+    writeJson(response, 200, { events: dependencies.tenantWebhookEvents.list(tenantId) });
+    return;
+  }
+
+  if (request.method === "GET" && second === "ticket-evaluations") {
+    writeJson(response, 200, { evaluations: dependencies.ticketEvaluations.list(tenantId) });
+    return;
+  }
+
+  if (request.method === "GET" && second === "dry-run-candidates") {
+    writeJson(response, 200, { candidates: dependencies.dryRunCandidates.list(tenantId) });
+    return;
+  }
+
   writeJson(response, 404, { error: "not_found", message: "Tenant route not found." });
 }
 
@@ -586,8 +659,8 @@ async function handleTenantSecretsRoute(
     await saveTenantSecret(request, response, tenantId, secretName, dependencies);
     return;
   }
-  if (request.method === "POST" && action === "rotate") {
-    await saveTenantSecret(request, response, tenantId, secretName, dependencies);
+  if (request.method === "POST" && (action === "rotate" || action === "generate")) {
+    generateTenantSecret(response, tenantId, secretName, dependencies);
     return;
   }
   if (request.method === "DELETE" && !action) {
@@ -596,6 +669,34 @@ async function handleTenantSecretsRoute(
     return;
   }
   writeJson(response, 405, { error: "method_not_allowed", message: "Unsupported tenant secret operation." });
+}
+
+function generateTenantSecret(
+  response: ServerResponse,
+  tenantId: string,
+  secretName: TenantSecretName,
+  dependencies: ApiDependencies
+) {
+  if (!["bms_webhook_secret", "approval_token_secret", "component_callback_secret"].includes(secretName)) {
+    writeJson(response, 400, { error: "unsupported_secret_generation", message: "This secret must be entered manually." });
+    return;
+  }
+  const value = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+  dependencies.tenantSecretRepository.upsert(tenantId, secretName, value);
+  dependencies.tenantAuditLog.record({
+    tenantId,
+    type: "tenant.secret.generated",
+    ticketId: null,
+    deviceUid: null,
+    componentId: null,
+    outcome: "success",
+    metadata: { secretName }
+  });
+  writeJson(response, 200, {
+    secretName,
+    value,
+    status: dependencies.tenantSecretRepository.status(tenantId).find((secret) => secret.secretName === secretName)
+  });
 }
 
 async function saveTenantSecret(
@@ -690,21 +791,50 @@ async function handleTenantTestsRoute(
 function runIntegrationTest(tenantId: string, testName: string, dependencies: ApiDependencies, config: ApiConfig): IntegrationTestRun {
   const started = Date.now();
   const settings = dependencies.tenantSettingsRepository.getOrCreate(tenantId);
-  let status: IntegrationTestRun["status"] = "dry_run";
-  let message = "Dry-run test completed without external API calls.";
+  let status: IntegrationTestRun["status"] = "skipped";
+  let message = "Test skipped.";
 
-  if (testName.startsWith("bms-")) {
+  if (testName === "api-health") {
+    status = "passed";
+    message = "API health is OK.";
+  } else if (testName === "webhook-self-test") {
+    const secret = dependencies.tenantSecretRepository.decrypt(tenantId, "bms_webhook_secret");
+    if (!secret) {
+      status = "failed";
+      message = "Tenant webhook secret is not configured.";
+    } else {
+      evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+      dependencies.tenantWebhookEvents.record({
+        tenantId,
+        eventType: "ticket.created",
+        source: "bms",
+        status: "accepted",
+        reason: null,
+        payloadSummary: { ticketId: "SELF-TEST", title: samplePrinterPayload().title }
+      });
+      status = "passed";
+      message = "Webhook self-test accepted and evaluated a sample printer ticket.";
+    }
+  } else if (testName === "classifier-sample") {
+    const evaluation = evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+    status = evaluation.detectedIntent === "restart_print_spooler" ? "passed" : "failed";
+    message = `Classifier detected ${evaluation.detectedIntent}.`;
+  } else if (testName === "policy-sample") {
+    const evaluation = evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+    status = evaluation.outcome === "AUTO_ELIGIBLE_CONFIRM_CLIENT" ? "passed" : "failed";
+    message = `Policy produced ${evaluation.outcome}.`;
+  } else if (testName.startsWith("bms-")) {
     const hasBmsBaseUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "bms_api_base_url"));
-    status = hasBmsBaseUrl ? "dry_run" : "failed";
-    message = hasBmsBaseUrl ? "BMS integration dry-run prerequisites are configured." : "BMS base URL is not configured.";
+    status = hasBmsBaseUrl ? "skipped" : "skipped";
+    message = hasBmsBaseUrl ? "BMS live auth is not implemented in MVP; dry-run prerequisites are configured." : "BMS credentials are missing.";
   } else if (testName.startsWith("datto-")) {
     const hasDattoUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "datto_rmm_api_url"));
     const liveAllowed = config.dattoRmmExecutionEnabled && settings.dattoExecutionEnabled && settings.executionMode === "live";
-    status = hasDattoUrl ? "dry_run" : "failed";
+    status = "skipped";
     message = hasDattoUrl
       ? `Datto RMM ${liveAllowed ? "read test allowed by flags" : "dry-run only; live execution remains disabled"}.`
-      : "Datto RMM API URL is not configured.";
-  } else if (testName === "classifier-sample" || testName === "device-match-sample") {
+      : "Datto credentials are missing.";
+  } else if (testName === "device-match-sample") {
     status = "passed";
     message = "Local sample test completed.";
   } else {
@@ -729,6 +859,17 @@ function runIntegrationTest(tenantId: string, testName: string, dependencies: Ap
     metadata: { testType: testName, status }
   });
   return run;
+}
+
+function samplePrinterPayload(): GenericBmsWebhookPayload {
+  return {
+    event: "ticket.created",
+    ticketId: "SELF-TEST",
+    title: "Printer not printing on FRONTDESK-01",
+    details: "User says printer is stuck",
+    account: "Test Account",
+    contactEmail: "user@example.com"
+  };
 }
 
 function handleTicketEvaluations(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
@@ -1144,6 +1285,14 @@ async function handleTenantBmsWebhook(
   try {
     tenant = dependencies.tenantRepository.getBySlug(tenantSlug);
   } catch {
+    dependencies.tenantWebhookEvents.record({
+      tenantId: null,
+      eventType: "unknown",
+      source: "bms",
+      status: "rejected",
+      reason: "tenant_not_found",
+      payloadSummary: { tenantSlug }
+    });
     writeJson(response, 404, { error: "not_found", message: "Tenant webhook endpoint was not found." });
     return;
   }
@@ -1157,6 +1306,14 @@ async function handleTenantBmsWebhook(
       componentId: null,
       outcome: "rejected",
       metadata: { reason: "tenant_inactive" }
+    });
+    dependencies.tenantWebhookEvents.record({
+      tenantId: tenant.id,
+      eventType: "unknown",
+      source: "bms",
+      status: "rejected",
+      reason: "tenant_inactive",
+      payloadSummary: { tenantSlug: tenant.slug }
     });
     writeJson(response, 403, { error: "tenant_inactive", message: "Tenant is not active." });
     return;
@@ -1173,6 +1330,14 @@ async function handleTenantBmsWebhook(
       outcome: "rejected",
       metadata: { reason: "secret_not_configured" }
     });
+    dependencies.tenantWebhookEvents.record({
+      tenantId: tenant.id,
+      eventType: "unknown",
+      source: "bms",
+      status: "rejected",
+      reason: "secret_not_configured",
+      payloadSummary: { tenantSlug: tenant.slug }
+    });
     writeJson(response, 503, { error: "configuration_error", message: "Tenant BMS webhook secret is not configured." });
     return;
   }
@@ -1187,14 +1352,22 @@ async function handleTenantBmsWebhook(
       outcome: "rejected",
       metadata: { reason: "invalid_secret" }
     });
+    dependencies.tenantWebhookEvents.record({
+      tenantId: tenant.id,
+      eventType: "unknown",
+      source: "bms",
+      status: "rejected",
+      reason: "invalid_secret",
+      payloadSummary: { tenantSlug: tenant.slug }
+    });
     logger.warn("Tenant BMS webhook rejected", { tenantId: tenant.id, reason: "invalid_secret" });
     writeJson(response, 401, { error: "unauthorized", message: "Invalid webhook secret." });
     return;
   }
 
-  let payload: BmsWebhookPayload;
+  let payload: GenericBmsWebhookPayload;
   try {
-    payload = parseBmsWebhookPayload(await readJsonBody(request));
+    payload = parseGenericBmsWebhookPayload(await readJsonBody(request));
   } catch (error) {
     dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
@@ -1205,10 +1378,26 @@ async function handleTenantBmsWebhook(
       outcome: "error",
       metadata: { reason: "invalid_payload" }
     });
+    dependencies.tenantWebhookEvents.record({
+      tenantId: tenant.id,
+      eventType: "unknown",
+      source: "bms",
+      status: "failed",
+      reason: "invalid_payload",
+      payloadSummary: { tenantSlug: tenant.slug }
+    });
     writeJson(response, 400, { error: "bad_request", message: "Invalid BMS webhook payload." });
     return;
   }
 
+  dependencies.tenantWebhookEvents.record({
+    tenantId: tenant.id,
+    eventType: payload.event,
+    source: "bms",
+    status: "accepted",
+    reason: null,
+    payloadSummary: { ticketId: payload.ticketId, title: payload.title }
+  });
   dependencies.tenantAuditLog.record({
     tenantId: tenant.id,
     type: "tenant.bms.webhook.accepted",
@@ -1216,14 +1405,16 @@ async function handleTenantBmsWebhook(
     deviceUid: null,
     componentId: null,
     outcome: "success",
-    metadata: { eventType: payload.eventType }
+    metadata: { eventType: payload.event }
   });
-  void dependencies.ticketIntakeService.enqueueTicketEvaluation(payload.ticketId, payload.eventType);
+  const evaluation = evaluateTenantWebhookPayload(tenant.id, payload, dependencies);
   writeJson(response, 202, {
-    status: "accepted",
+    accepted: true,
     tenantId: tenant.id,
+    tenantSlug: tenant.slug,
     ticketId: payload.ticketId,
-    eventType: payload.eventType
+    evaluationId: evaluation.id,
+    outcome: evaluation.outcome
   });
 }
 
@@ -1260,6 +1451,138 @@ function parseBmsWebhookPayload(payload: unknown): BmsWebhookPayload {
     eventType,
     ticketId: ticketId.trim()
   };
+}
+
+function parseGenericBmsWebhookPayload(payload: unknown): GenericBmsWebhookPayload {
+  if (!isRecord(payload)) {
+    throw new Error("Payload must be an object.");
+  }
+  const event = payload.event ?? payload.eventType;
+  const ticketId = payload.ticketId;
+  const title = payload.title;
+  const details = payload.details ?? payload.description ?? "";
+  const account = payload.account ?? payload.accountName ?? "Unknown Account";
+  const contactEmail = payload.contactEmail;
+  if (event !== "ticket.created" && event !== "ticket.updated") {
+    throw new Error("event must be ticket.created or ticket.updated.");
+  }
+  if (typeof ticketId !== "string" || !ticketId.trim()) {
+    throw new Error("ticketId is required.");
+  }
+  if (typeof title !== "string" || !title.trim()) {
+    throw new Error("title is required.");
+  }
+  if (typeof details !== "string") {
+    throw new Error("details must be a string.");
+  }
+  if (typeof account !== "string") {
+    throw new Error("account must be a string.");
+  }
+  return {
+    event,
+    ticketId: ticketId.trim(),
+    title: title.trim(),
+    details,
+    account,
+    contactEmail: typeof contactEmail === "string" ? contactEmail : null
+  };
+}
+
+function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebhookPayload, dependencies: ApiDependencies) {
+  const now = new Date().toISOString();
+  const ticket: Ticket = {
+    id: `ticket:${payload.ticketId}`,
+    externalBmsId: payload.ticketId,
+    accountId: tenantId,
+    accountName: payload.account,
+    contactId: payload.contactEmail,
+    contactName: null,
+    contactEmail: payload.contactEmail,
+    title: payload.title,
+    description: payload.details,
+    queue: null,
+    status: "new",
+    priority: null,
+    source: "bms",
+    createdAt: now,
+    updatedAt: now
+  };
+  const classification = classifyTicket(ticket, {
+    contactDeviceCorrelated: true,
+    accountSiteMatched: true
+  });
+  const component = dependencies.componentRegistry.findEnabledMatch(classification.intent, "workstation");
+  const matchedDevice: Device = {
+    id: `device:${classification.explicitHostname ?? "sample-workstation"}`,
+    accountId: tenantId,
+    dattoSiteUid: null,
+    siteLocationId: null,
+    dattoDeviceUid: classification.explicitHostname ?? "sample-workstation",
+    hostname: classification.explicitHostname ?? "sample-workstation",
+    kind: "workstation",
+    assetType: "workstation",
+    lastLoggedInUser: payload.contactEmail,
+    onlineStatus: "online",
+    isAutomationEligible: true,
+    lastSeenAt: now,
+    serialNumber: null,
+    operatingSystem: "Windows",
+    createdAt: now,
+    updatedAt: now
+  };
+  const decision = evaluateTicketPolicy({
+    ticket,
+    classification,
+    componentRegistryEntry: component,
+    deviceMatchStatus: component ? "matched" : "missing",
+    matchedDevice: component ? matchedDevice : null,
+    deviceMatchResult: component ? {
+      outcome: "single_high_confidence_match",
+      confidence: 95,
+      matchedDevice,
+      candidates: [],
+      reasons: ["MVP webhook self-test uses explicit safe workstation context."]
+    } : null
+  });
+  const evaluation = dependencies.ticketEvaluations.record({
+    tenantId,
+    externalTicketId: payload.ticketId,
+    title: payload.title,
+    detectedIntent: decision.detectedIntent,
+    confidence: decision.confidence,
+    outcome: decision.outcome,
+    reasons: decision.reasons,
+    matchedComponentId: decision.componentRegistryEntryId
+  });
+  dependencies.tenantAuditLog.record({
+    tenantId,
+    type: "ticket.evaluation.completed",
+    ticketId: ticket.id,
+    deviceUid: matchedDevice.dattoDeviceUid,
+    componentId: decision.componentRegistryEntryId,
+    outcome: "success",
+    metadata: { outcome: decision.outcome, confidence: decision.confidence }
+  });
+  if (decision.componentRegistryEntryId && decision.outcome === "AUTO_ELIGIBLE_CONFIRM_CLIENT") {
+    dependencies.dryRunCandidates.record({
+      tenantId,
+      ticketEvaluationId: evaluation.id,
+      ticketId: ticket.id,
+      componentId: decision.componentRegistryEntryId,
+      outcome: decision.outcome,
+      status: "created"
+    });
+    dependencies.tenantAuditLog.record({
+      tenantId,
+      type: "automation.dry_run_candidate.created",
+      ticketId: ticket.id,
+      deviceUid: matchedDevice.dattoDeviceUid,
+      componentId: decision.componentRegistryEntryId,
+      outcome: "success",
+      metadata: { reason: "No live Datto execution is performed in MVP vertical slice." }
+    });
+  }
+  return evaluation;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1496,6 +1819,83 @@ function writeConfigError(response: ServerResponse, validation: ConfigValidation
     code: validation.code ?? "not_ready",
     message: validation.message ?? "Required runtime configuration is missing."
   });
+}
+
+function applyCors(request: IncomingMessage, response: ServerResponse, config: ApiConfig): boolean {
+  const origin = typeof request.headers.origin === "string" ? request.headers.origin : null;
+  if (!origin) {
+    return true;
+  }
+  const allowedOrigin = config.adminAllowedOrigin;
+  const isAllowed = allowedOrigin ? origin === allowedOrigin : config.nodeEnv !== "production";
+  if (!isAllowed) {
+    response.writeHead(403, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    });
+    response.end(JSON.stringify({ error: "cors_forbidden", message: "Origin is not allowed." }));
+    return false;
+  }
+  response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("vary", "origin");
+  response.setHeader("access-control-allow-credentials", "true");
+  response.setHeader("access-control-allow-methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+  response.setHeader("access-control-allow-headers", "content-type,authorization,x-dispatch-sentinel-secret,x-dispatch-sentinel-component-secret");
+  return true;
+}
+
+function adminSessionCookie(token: string, expiresAt: string, config: ApiConfig): string {
+  const secure = config.nodeEnv === "production";
+  return [
+    `dispatch_sentinel_admin=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    `Expires=${new Date(expiresAt).toUTCString()}`,
+    secure ? "Secure" : "",
+    secure ? "SameSite=None" : "SameSite=Lax"
+  ].filter(Boolean).join("; ");
+}
+
+function expiredAdminCookie(config: ApiConfig): string {
+  return [
+    "dispatch_sentinel_admin=",
+    "Path=/",
+    "HttpOnly",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    config.nodeEnv === "production" ? "Secure" : "",
+    config.nodeEnv === "production" ? "SameSite=None" : "SameSite=Lax"
+  ].filter(Boolean).join("; ");
+}
+
+function adminTokenFromRequest(request: IncomingMessage): string | null {
+  return parseSessionCookie(request.headers.cookie);
+}
+
+async function isDatabaseReachable(config: ApiConfig): Promise<boolean> {
+  if (!config.databaseUrl || config.databaseUrl.startsWith("file:")) {
+    return false;
+  }
+  try {
+    const databaseUrl = new URL(config.databaseUrl);
+    const port = databaseUrl.port ? Number(databaseUrl.port) : 5432;
+    if (!databaseUrl.hostname || !Number.isInteger(port)) {
+      return false;
+    }
+    return await new Promise<boolean>((resolve) => {
+      const socket = new Socket();
+      const finish = (reachable: boolean) => {
+        socket.destroy();
+        resolve(reachable);
+      };
+      socket.setTimeout(500);
+      socket.once("connect", () => finish(true));
+      socket.once("error", () => finish(false));
+      socket.once("timeout", () => finish(false));
+      socket.connect(port, databaseUrl.hostname);
+    });
+  } catch {
+    return false;
+  }
 }
 
 const defaultConfig = loadConfig();

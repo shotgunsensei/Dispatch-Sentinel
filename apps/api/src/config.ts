@@ -38,6 +38,8 @@ export interface ApiConfig {
   adminSetupToken: string | null;
   adminSessionSecret: string | null;
   encryptionKey: string | null;
+  encryptionKeyVersion: string;
+  adminAllowedOrigin: string | null;
   adminSessionTtlMinutes: number;
   webhookRateLimitPerMinute: number;
   approvalRateLimitPerMinute: number;
@@ -64,6 +66,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const adminSetupToken = env.ADMIN_SETUP_TOKEN ?? (nodeEnv === "production" ? null : "local-admin-setup-token");
   const adminSessionSecret = env.ADMIN_SESSION_SECRET ?? (nodeEnv === "production" ? null : "local-admin-session-secret");
   const encryptionKey = env.DISPATCH_SENTINEL_ENCRYPTION_KEY ?? null;
+  const encryptionKeyVersion = env.DISPATCH_SENTINEL_ENCRYPTION_KEY_VERSION ?? "v1";
+  const adminAllowedOrigin = env.ADMIN_ALLOWED_ORIGIN ?? null;
   const adminSessionTtlMinutes = Number(env.ADMIN_SESSION_TTL_MINUTES ?? 480);
   const webhookRateLimitPerMinute = Number(env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? 60);
   const approvalRateLimitPerMinute = Number(env.APPROVAL_RATE_LIMIT_PER_MINUTE ?? 30);
@@ -141,6 +145,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     adminSetupToken,
     adminSessionSecret,
     encryptionKey,
+    encryptionKeyVersion,
+    adminAllowedOrigin,
     adminSessionTtlMinutes,
     webhookRateLimitPerMinute,
     approvalRateLimitPerMinute,

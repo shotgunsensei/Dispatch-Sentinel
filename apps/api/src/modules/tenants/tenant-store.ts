@@ -72,13 +72,50 @@ export interface TenantSettings {
   updatedAt: string;
 }
 
+export type IntegrationTestStatus = "passed" | "failed" | "skipped" | "dry_run";
+
 export interface IntegrationTestRun {
   id: string;
   tenantId: string;
   testType: string;
-  status: "passed" | "failed" | "dry_run";
+  status: IntegrationTestStatus;
   message: string;
   durationMs: number;
+  createdAt: string;
+}
+
+export interface TenantWebhookEvent {
+  id: string;
+  tenantId: string | null;
+  eventType: string;
+  source: "bms";
+  status: "accepted" | "rejected" | "failed";
+  reason: string | null;
+  payloadSummary: Record<string, string | number | boolean | null>;
+  createdAt: string;
+}
+
+export interface TicketEvaluationRecord {
+  id: string;
+  tenantId: string;
+  externalTicketId: string | null;
+  title: string;
+  detectedIntent: string;
+  confidence: number;
+  outcome: string;
+  reasons: string[];
+  matchedComponentId: string | null;
+  createdAt: string;
+}
+
+export interface DryRunAutomationCandidate {
+  id: string;
+  tenantId: string;
+  ticketEvaluationId: string;
+  ticketId: string;
+  componentId: string;
+  outcome: string;
+  status: "created";
   createdAt: string;
 }
 
@@ -253,6 +290,54 @@ export class IntegrationTestRunRepository {
 
   list(tenantId: string): IntegrationTestRun[] {
     return this.runs.filter((run) => run.tenantId === tenantId).map((run) => structuredClone(run));
+  }
+}
+
+export class TenantWebhookEventRepository {
+  private readonly events: TenantWebhookEvent[] = [];
+
+  record(event: Omit<TenantWebhookEvent, "id" | "createdAt">, now = new Date()): TenantWebhookEvent {
+    const created = { ...event, id: crypto.randomUUID(), createdAt: now.toISOString() };
+    this.events.push(structuredClone(created));
+    return structuredClone(created);
+  }
+
+  list(tenantId?: string): TenantWebhookEvent[] {
+    return this.events
+      .filter((event) => !tenantId || event.tenantId === tenantId)
+      .map((event) => structuredClone(event));
+  }
+}
+
+export class TicketEvaluationRepository {
+  private readonly evaluations: TicketEvaluationRecord[] = [];
+
+  record(evaluation: Omit<TicketEvaluationRecord, "id" | "createdAt">, now = new Date()): TicketEvaluationRecord {
+    const created = { ...evaluation, id: crypto.randomUUID(), createdAt: now.toISOString() };
+    this.evaluations.push(structuredClone(created));
+    return structuredClone(created);
+  }
+
+  list(tenantId?: string): TicketEvaluationRecord[] {
+    return this.evaluations
+      .filter((evaluation) => !tenantId || evaluation.tenantId === tenantId)
+      .map((evaluation) => structuredClone(evaluation));
+  }
+}
+
+export class DryRunAutomationCandidateRepository {
+  private readonly candidates: DryRunAutomationCandidate[] = [];
+
+  record(candidate: Omit<DryRunAutomationCandidate, "id" | "createdAt">, now = new Date()): DryRunAutomationCandidate {
+    const created = { ...candidate, id: crypto.randomUUID(), createdAt: now.toISOString() };
+    this.candidates.push(structuredClone(created));
+    return structuredClone(created);
+  }
+
+  list(tenantId?: string): DryRunAutomationCandidate[] {
+    return this.candidates
+      .filter((candidate) => !tenantId || candidate.tenantId === tenantId)
+      .map((candidate) => structuredClone(candidate));
   }
 }
 

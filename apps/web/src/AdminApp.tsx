@@ -1,9 +1,11 @@
 "use client";
 
 import React, { FormEvent, useEffect, useState } from "react";
+import { apiBaseUrl, apiRequest, ApiRequestError, hasApiBaseUrl } from "./api-client";
 
 type RouteName = "login" | "dashboard" | "tenants" | "tenant-new" | "tenant-detail" | "tenant-secrets" | "tenant-tests";
 type ApiStatus = "checking" | "online" | "offline";
+type AuthStatus = "checking" | "authenticated" | "unauthenticated";
 type RequestState = { status: "idle" | "loading" | "success" | "error"; message: string };
 
 interface HealthResponse {
@@ -57,8 +59,31 @@ interface IntegrationTestRun {
   createdAt: string;
 }
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
-const sessionKey = "dispatch-sentinel-admin-token";
+interface TenantWebhookEvent {
+  id: string;
+  eventType: string;
+  status: string;
+  reason: string | null;
+  createdAt: string;
+}
+
+interface TicketEvaluation {
+  id: string;
+  externalTicketId: string | null;
+  title: string;
+  detectedIntent: string;
+  confidence: number;
+  outcome: string;
+  createdAt: string;
+}
+
+interface DryRunCandidate {
+  id: string;
+  ticketEvaluationId: string;
+  componentId: string;
+  status: string;
+  createdAt: string;
+}
 
 const navItems: Array<{ route: RouteName; href: string; label: string }> = [
   { route: "dashboard", href: "/admin", label: "Dashboard" },
@@ -83,18 +108,22 @@ export function routeFromPath(pathname: string): { route: RouteName; tenantId: s
 
 export function AdminApp({ initialPath }: { initialPath: string }): React.ReactElement {
   const [route, setRoute] = useState(() => routeFromPath(initialPath));
-  const [token, setToken] = useState("");
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
 
   useEffect(() => {
-    setToken(sessionStorage.getItem(sessionKey) ?? "");
     const onPop = () => setRoute(routeFromPath(window.location.pathname));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   useEffect(() => {
+    if (!hasApiBaseUrl()) {
+      setApiStatus("offline");
+      setAuthStatus("unauthenticated");
+      return;
+    }
     void apiRequest<HealthResponse>("/health")
       .then((body) => {
         setHealth(body);
@@ -106,16 +135,39 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
       });
   }, []);
 
+  useEffect(() => {
+    if (!hasApiBaseUrl()) {
+      return;
+    }
+    void apiRequest<{ authenticated: boolean }>("/api/admin/me")
+      .then(() => setAuthStatus("authenticated"))
+      .catch((error) => {
+        setAuthStatus("unauthenticated");
+        if (!(error instanceof ApiRequestError) || error.status !== 401) {
+          setApiStatus("offline");
+        }
+      });
+  }, []);
+
   const navigate = (href: string) => {
     window.history.pushState(null, "", href);
     setRoute(routeFromPath(window.location.pathname));
   };
 
-  const onAuthenticated = (sessionToken: string) => {
-    sessionStorage.setItem(sessionKey, sessionToken);
-    setToken(sessionToken);
+  useEffect(() => {
+    if (authStatus === "unauthenticated" && route.route !== "login") {
+      navigate("/admin/login");
+    }
+  }, [authStatus, route.route]);
+
+  const onAuthenticated = () => {
+    setAuthStatus("authenticated");
     navigate("/admin");
   };
+
+  if (!hasApiBaseUrl()) {
+    return <ConfigErrorPage />;
+  }
 
   if (route.route === "login") {
     return <LoginPage onAuthenticated={onAuthenticated} />;
@@ -126,15 +178,16 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
       apiStatus={apiStatus}
       health={health}
       activeRoute={route.route}
-      token={token}
+      authenticated={authStatus === "authenticated"}
       navigate={navigate}
     >
-      {route.route === "tenants" && <TenantListPage token={token} navigate={navigate} />}
-      {route.route === "tenant-new" && <NewTenantPage token={token} navigate={navigate} />}
+      {authStatus !== "authenticated" && <Panel title="Admin Login Required"><p className="muted">Redirecting to admin login...</p></Panel>}
+      {authStatus === "authenticated" && route.route === "tenants" && <TenantListPage navigate={navigate} />}
+      {authStatus === "authenticated" && route.route === "tenant-new" && <NewTenantPage navigate={navigate} />}
       {(route.route === "tenant-detail" || route.route === "tenant-secrets" || route.route === "tenant-tests") && route.tenantId && (
-        <TenantDetailPage token={token} tenantId={route.tenantId} activeRoute={route.route} navigate={navigate} />
+        authStatus === "authenticated" && <TenantDetailPage tenantId={route.tenantId} activeRoute={route.route} navigate={navigate} />
       )}
-      {route.route === "dashboard" && <DashboardPage token={token} health={health} />}
+      {authStatus === "authenticated" && route.route === "dashboard" && <DashboardPage health={health} />}
     </Shell>
   );
 }
@@ -144,7 +197,7 @@ function Shell(props: {
   apiStatus: ApiStatus;
   health: HealthResponse | null;
   activeRoute: RouteName;
-  token: string;
+  authenticated: boolean;
   navigate: (href: string) => void;
 }): React.ReactElement {
   const liveEnabled = Boolean(props.health?.dattoExecutionGloballyEnabled);
@@ -179,10 +232,10 @@ function Shell(props: {
           </div>
           <div className="header-status">
             <Badge tone={props.apiStatus === "online" ? "good" : props.apiStatus === "checking" ? "warn" : "bad"}>
-              API {props.apiStatus}
+              {props.apiStatus === "online" ? "API Online" : props.apiStatus === "checking" ? "API Checking" : "API Offline"}
             </Badge>
-            <Badge tone={liveEnabled ? "bad" : "good"}>{liveEnabled ? "Live globally enabled" : "Dry-run safe"}</Badge>
-            {!props.token && <Badge tone="warn">Unauthorized</Badge>}
+            <Badge tone={liveEnabled ? "bad" : "good"}>{liveEnabled ? "Live Execution Enabled" : "Dry-run Safe"}</Badge>
+            <Badge tone={props.authenticated ? "good" : "warn"}>{props.authenticated ? "Authenticated" : "Unauthorized"}</Badge>
           </div>
         </header>
         {props.children}
@@ -191,7 +244,7 @@ function Shell(props: {
   );
 }
 
-function LoginPage({ onAuthenticated }: { onAuthenticated: (token: string) => void }): React.ReactElement {
+function LoginPage({ onAuthenticated }: { onAuthenticated: () => void }): React.ReactElement {
   const [tokenValue, setTokenValue] = useState("");
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
 
@@ -199,11 +252,11 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (token: string) => vo
     event.preventDefault();
     setState({ status: "loading", message: "Signing in..." });
     try {
-      const body = await apiRequest<{ token: string }>("/api/admin/login", {
+      await apiRequest<{ authenticated?: boolean }>("/api/admin/login", {
         method: "POST",
         body: { token: tokenValue }
       });
-      onAuthenticated(body.token);
+      onAuthenticated();
       setState({ status: "success", message: "Signed in." });
     } catch (error) {
       setState({ status: "error", message: errorMessage(error) });
@@ -230,15 +283,29 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (token: string) => vo
             Login
           </button>
           <StatusLine state={state} />
-          <p className="muted">No registration. The MVP stores the returned admin token in session storage only.</p>
+          <p className="muted">No registration. The MVP uses a secure admin session cookie issued by the API.</p>
         </form>
       </section>
     </main>
   );
 }
 
-function DashboardPage({ token, health }: { token: string; health: HealthResponse | null }): React.ReactElement {
-  const tenants = useTenants(token);
+function ConfigErrorPage(): React.ReactElement {
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <p className="eyebrow">Configuration Required</p>
+        <h1>API base URL missing</h1>
+        <p className="muted">Set NEXT_PUBLIC_API_BASE_URL in the web Vercel project and redeploy the web app.</p>
+      </section>
+    </main>
+  );
+}
+
+function DashboardPage({ health }: { health: HealthResponse | null }): React.ReactElement {
+  const tenants = useTenants();
+  const recentEvents = useRecentWebhookEvents();
+  const recentTests = useRecentTests();
   const activeTenants = tenants.items.filter((tenant) => tenant.status === "active");
   const bmsConfigured = tenants.items.filter((tenant) => tenant.configuration.bmsConfigured || tenant.configuration.bmsWebhookConfigured);
   const dattoConfigured = tenants.items.filter((tenant) => tenant.configuration.dattoConfigured);
@@ -251,13 +318,15 @@ function DashboardPage({ token, health }: { token: string; health: HealthRespons
         <Metric label="Active tenants" value={String(activeTenants.length)} />
         <Metric label="BMS configured" value={String(bmsConfigured.length)} />
         <Metric label="Datto configured" value={String(dattoConfigured.length)} />
-        <Metric label="Recent webhooks" value="audit API pending" />
-        <Metric label="Recent tests" value="per tenant" />
+        <Metric label="Recent webhooks" value={String(recentEvents.length)} />
+        <Metric label="Recent tests" value={String(recentTests.length)} />
       </section>
       <Alert state={tenants.state} />
       <section className="split">
         <Panel title="Recent Integration Test Results">
-          <p className="muted">Open a tenant test console to run and view tenant-specific checks.</p>
+          {recentTests.length === 0 ? <p className="muted">No integration tests have been run yet.</p> : (
+            <Table headers={["Tenant", "Test", "Status", "Message"]} rows={recentTests.slice(0, 5).map((item) => [item.tenantName, item.test.testType, item.test.status, item.test.message])} />
+          )}
         </Panel>
         <Panel title="Safety Posture">
           <ul className="status-list">
@@ -271,13 +340,12 @@ function DashboardPage({ token, health }: { token: string; health: HealthRespons
   );
 }
 
-function TenantListPage({ token, navigate }: { token: string; navigate: (href: string) => void }): React.ReactElement {
-  const tenants = useTenants(token);
+function TenantListPage({ navigate }: { navigate: (href: string) => void }): React.ReactElement {
+  const tenants = useTenants();
   async function toggleTenant(tenant: TenantSummary) {
     try {
       await apiRequest(`/api/admin/tenants/${tenant.id}/${tenant.status === "active" ? "disable" : "enable"}`, {
-        method: "POST",
-        token
+        method: "POST"
       });
       window.location.reload();
     } catch (error) {
@@ -311,7 +379,7 @@ function TenantListPage({ token, navigate }: { token: string; navigate: (href: s
   );
 }
 
-function NewTenantPage({ token, navigate }: { token: string; navigate: (href: string) => void }): React.ReactElement {
+function NewTenantPage({ navigate }: { navigate: (href: string) => void }): React.ReactElement {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
@@ -322,7 +390,6 @@ function NewTenantPage({ token, navigate }: { token: string; navigate: (href: st
     try {
       const body = await apiRequest<{ tenant: TenantSummary }>("/api/admin/tenants", {
         method: "POST",
-        token,
         body: { name, slug }
       });
       setState({ status: "success", message: "Tenant created." });
@@ -344,11 +411,14 @@ function NewTenantPage({ token, navigate }: { token: string; navigate: (href: st
   );
 }
 
-function TenantDetailPage(props: { token: string; tenantId: string; activeRoute: RouteName; navigate: (href: string) => void }): React.ReactElement {
-  const tenant = useTenant(props.token, props.tenantId);
-  const settings = useTenantSettings(props.token, props.tenantId);
-  const secrets = useTenantSecrets(props.token, props.tenantId);
-  const tests = useTenantTests(props.token, props.tenantId);
+function TenantDetailPage(props: { tenantId: string; activeRoute: RouteName; navigate: (href: string) => void }): React.ReactElement {
+  const tenant = useTenant(props.tenantId);
+  const settings = useTenantSettings(props.tenantId);
+  const secrets = useTenantSecrets(props.tenantId);
+  const tests = useTenantTests(props.tenantId);
+  const events = useTenantWebhookEvents(props.tenantId);
+  const evaluations = useTenantEvaluations(props.tenantId);
+  const candidates = useTenantDryRunCandidates(props.tenantId);
   const webhookUrl = tenant.item ? `${apiBaseUrl}${tenant.item.webhookUrl}` : "";
 
   if (tenant.state.status === "loading") return <Panel title="Tenant"><p className="muted">Loading tenant...</p></Panel>;
@@ -371,28 +441,36 @@ function TenantDetailPage(props: { token: string; tenantId: string; activeRoute:
       </Panel>
       {props.activeRoute !== "tenant-tests" && (
         <>
-          <BmsConfiguration token={props.token} tenantId={props.tenantId} settings={settings.item} />
-          <WebhookConfiguration token={props.token} tenantId={props.tenantId} tenant={tenant.item} secrets={secrets.items} />
-          <DattoConfiguration token={props.token} tenantId={props.tenantId} />
-          <ExecutionSafety token={props.token} tenantId={props.tenantId} settings={settings.item} />
+          <BmsConfiguration tenantId={props.tenantId} settings={settings.item} />
+          <WebhookConfiguration tenantId={props.tenantId} tenant={tenant.item} secrets={secrets.items} />
+          <DattoConfiguration tenantId={props.tenantId} />
+          <ExecutionSafety tenantId={props.tenantId} settings={settings.item} />
         </>
       )}
       {(props.activeRoute === "tenant-tests" || props.activeRoute === "tenant-detail") && (
-        <IntegrationTests token={props.token} tenantId={props.tenantId} tests={tests.items} />
+        <IntegrationTests tenantId={props.tenantId} tests={tests.items} />
       )}
       <Panel title="Recent Events">
-        <p className="muted">Tenant audit feed endpoint is not exposed to the web app yet.</p>
+        <Table headers={["Event", "Status", "Reason", "Timestamp"]} rows={events.items.slice(0, 5).map((event) => [event.eventType, event.status, event.reason ?? "-", event.createdAt])} />
+        {events.items.length === 0 && <p className="muted">No webhook events yet.</p>}
+      </Panel>
+      <Panel title="Recent Ticket Evaluations">
+        <Table headers={["Ticket", "Intent", "Confidence", "Outcome", "Timestamp"]} rows={evaluations.items.slice(0, 5).map((evaluation) => [evaluation.externalTicketId ?? "-", evaluation.detectedIntent, String(evaluation.confidence), evaluation.outcome, evaluation.createdAt])} />
+        {evaluations.items.length === 0 && <p className="muted">No ticket evaluations yet.</p>}
+      </Panel>
+      <Panel title="Dry-run Automation Candidates">
+        <Table headers={["Evaluation", "Component", "Status", "Timestamp"]} rows={candidates.items.slice(0, 5).map((candidate) => [candidate.ticketEvaluationId, candidate.componentId, candidate.status, candidate.createdAt])} />
+        {candidates.items.length === 0 && <p className="muted">No dry-run automation candidates yet.</p>}
       </Panel>
     </>
   );
 }
 
-function BmsConfiguration(props: { token: string; tenantId: string; settings: TenantSettings | null }): React.ReactElement {
+function BmsConfiguration(props: { tenantId: string; settings: TenantSettings | null }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   return (
     <Panel title="BMS Configuration">
       <SecretInputs
-        token={props.token}
         tenantId={props.tenantId}
         fields={[
           ["BMS API base URL", "bms_api_base_url"],
@@ -401,29 +479,30 @@ function BmsConfiguration(props: { token: string; tenantId: string; settings: Te
         ]}
         onState={setState}
       />
-      <SettingsQueueForm token={props.token} tenantId={props.tenantId} settings={props.settings} />
+      <SettingsQueueForm tenantId={props.tenantId} settings={props.settings} />
       <div className="toolbar">
-        <TestButton token={props.token} tenantId={props.tenantId} test="bms-auth" label="Test BMS auth" />
-        <TestButton token={props.token} tenantId={props.tenantId} test="bms-fetch-ticket" label="Test fetch ticket by ID" />
-        <TestButton token={props.token} tenantId={props.tenantId} test="bms-add-internal-note" label="Test add internal note" />
+        <TestButton tenantId={props.tenantId} test="bms-auth" label="Test BMS auth" />
+        <TestButton tenantId={props.tenantId} test="bms-fetch-ticket" label="Test fetch ticket by ID" />
+        <TestButton tenantId={props.tenantId} test="bms-add-internal-note" label="Test add internal note" />
       </div>
       <StatusLine state={state} />
     </Panel>
   );
 }
 
-function WebhookConfiguration(props: { token: string; tenantId: string; tenant: TenantSummary; secrets: TenantSecretStatus[] }): React.ReactElement {
+function WebhookConfiguration(props: { tenantId: string; tenant: TenantSummary; secrets: TenantSecretStatus[] }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   const [generatedSecret, setGeneratedSecret] = useState("");
   const webhookSecret = props.secrets.find((secret) => secret.secretName === "bms_webhook_secret");
   const webhookUrl = `${apiBaseUrl}${props.tenant.webhookUrl}`;
 
   async function rotateSecret() {
-    const nextSecret = generateSecret();
     setState({ status: "loading", message: "Rotating webhook secret..." });
     try {
-      await saveSecret(props.token, props.tenantId, "bms_webhook_secret", nextSecret);
-      setGeneratedSecret(nextSecret);
+      const body = await apiRequest<{ value: string }>(`/api/admin/tenants/${props.tenantId}/secrets/bms_webhook_secret/rotate`, {
+        method: "POST"
+      });
+      setGeneratedSecret(body.value);
       setState({ status: "success", message: "Webhook secret rotated. Store the one-time value now." });
     } catch (error) {
       setGeneratedSecret("");
@@ -438,7 +517,7 @@ function WebhookConfiguration(props: { token: string; tenantId: string; tenant: 
         <div className="server-lock"><span>Webhook secret configured</span><strong>{yesNo(Boolean(webhookSecret?.configured))}</strong></div>
         <button type="button" onClick={() => void rotateSecret()}>Generate/rotate webhook secret</button>
         <button type="button" onClick={() => void navigator.clipboard?.writeText(webhookUrl)}>Copy webhook URL</button>
-        <TestButton token={props.token} tenantId={props.tenantId} test="bms-auth" label="Send test webhook" />
+        <TestButton tenantId={props.tenantId} test="webhook-self-test" label="Send test webhook" />
       </div>
       {generatedSecret && <p className="one-time-secret">One-time webhook secret: <code>{generatedSecret}</code></p>}
       <StatusLine state={state} />
@@ -446,12 +525,11 @@ function WebhookConfiguration(props: { token: string; tenantId: string; tenant: 
   );
 }
 
-function DattoConfiguration(props: { token: string; tenantId: string }): React.ReactElement {
+function DattoConfiguration(props: { tenantId: string }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   return (
     <Panel title="Datto RMM Configuration">
       <SecretInputs
-        token={props.token}
         tenantId={props.tenantId}
         fields={[
           ["Datto API URL", "datto_rmm_api_url"],
@@ -461,16 +539,16 @@ function DattoConfiguration(props: { token: string; tenantId: string }): React.R
         onState={setState}
       />
       <div className="toolbar">
-        <TestButton token={props.token} tenantId={props.tenantId} test="datto-auth" label="Test Datto auth" />
-        <TestButton token={props.token} tenantId={props.tenantId} test="datto-list-sites" label="Test list sites" />
-        <TestButton token={props.token} tenantId={props.tenantId} test="datto-list-devices" label="Test list devices" />
+        <TestButton tenantId={props.tenantId} test="datto-auth" label="Test Datto auth" />
+        <TestButton tenantId={props.tenantId} test="datto-list-sites" label="Test list sites" />
+        <TestButton tenantId={props.tenantId} test="datto-list-devices" label="Test list devices" />
       </div>
       <StatusLine state={state} />
     </Panel>
   );
 }
 
-function ExecutionSafety(props: { token: string; tenantId: string; settings: TenantSettings | null }): React.ReactElement {
+function ExecutionSafety(props: { tenantId: string; settings: TenantSettings | null }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   const [executionMode, setExecutionMode] = useState<TenantSettings["executionMode"]>("dry_run");
   const [dattoEnabled, setDattoEnabled] = useState(false);
@@ -491,7 +569,6 @@ function ExecutionSafety(props: { token: string; tenantId: string; settings: Ten
     try {
       await apiRequest(`/api/admin/tenants/${props.tenantId}/settings`, {
         method: "PATCH",
-        token: props.token,
         body: {
           execution_mode: executionMode,
           datto_execution_enabled: dattoEnabled,
@@ -520,7 +597,7 @@ function ExecutionSafety(props: { token: string; tenantId: string; settings: Ten
   );
 }
 
-function IntegrationTests(props: { token: string; tenantId: string; tests: IntegrationTestRun[] }): React.ReactElement {
+function IntegrationTests(props: { tenantId: string; tests: IntegrationTestRun[] }): React.ReactElement {
   return (
     <Panel title="Integration Test Console">
       <div className="toolbar">
@@ -532,8 +609,10 @@ function IntegrationTests(props: { token: string; tenantId: string; tests: Integ
           ["datto-list-sites", "Test list Datto sites"],
           ["datto-list-devices", "Test list Datto devices"],
           ["classifier-sample", "Test classifier sample"],
+          ["policy-sample", "Test policy sample"],
+          ["webhook-self-test", "Test webhook self-test"],
           ["device-match-sample", "Test device match sample"]
-        ].map(([test, label]) => <TestButton key={test} token={props.token} tenantId={props.tenantId} test={test} label={label} />)}
+        ].map(([test, label]) => <TestButton key={test} tenantId={props.tenantId} test={test} label={label} />)}
       </div>
       <Table
         headers={["Test type", "Status", "Message", "Duration", "Timestamp"]}
@@ -543,14 +622,14 @@ function IntegrationTests(props: { token: string; tenantId: string; tests: Integ
   );
 }
 
-function SecretInputs(props: { token: string; tenantId: string; fields: string[][]; onState: (state: RequestState) => void }): React.ReactElement {
+function SecretInputs(props: { tenantId: string; fields: string[][]; onState: (state: RequestState) => void }): React.ReactElement {
   const [values, setValues] = useState<Record<string, string>>({});
   async function save() {
     props.onState({ status: "loading", message: "Saving encrypted secrets..." });
     try {
       for (const [, name] of props.fields) {
         if (values[name]) {
-          await saveSecret(props.token, props.tenantId, name, values[name]);
+          await saveSecret(props.tenantId, name, values[name]);
         }
       }
       setValues({});
@@ -576,7 +655,7 @@ function SecretInputs(props: { token: string; tenantId: string; fields: string[]
   );
 }
 
-function SettingsQueueForm(props: { token: string; tenantId: string; settings: TenantSettings | null }): React.ReactElement {
+function SettingsQueueForm(props: { tenantId: string; settings: TenantSettings | null }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   const [values, setValues] = useState<Record<string, string>>({});
   const fields = [
@@ -588,7 +667,7 @@ function SettingsQueueForm(props: { token: string; tenantId: string; settings: T
   async function save() {
     setState({ status: "loading", message: "Saving BMS queues..." });
     try {
-      await apiRequest(`/api/admin/tenants/${props.tenantId}/settings`, { method: "PATCH", token: props.token, body: values });
+      await apiRequest(`/api/admin/tenants/${props.tenantId}/settings`, { method: "PATCH", body: values });
       setState({ status: "success", message: "BMS queue settings saved." });
     } catch (error) {
       setState({ status: "error", message: errorMessage(error) });
@@ -607,14 +686,13 @@ function SettingsQueueForm(props: { token: string; tenantId: string; settings: T
   );
 }
 
-function TestButton(props: { token: string; tenantId: string; test: string; label: string }): React.ReactElement {
+function TestButton(props: { tenantId: string; test: string; label: string }): React.ReactElement {
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
   async function run() {
     setState({ status: "loading", message: "Running..." });
     try {
       const body = await apiRequest<{ test: IntegrationTestRun }>(`/api/admin/tenants/${props.tenantId}/tests/${props.test}`, {
-        method: "POST",
-        token: props.token
+        method: "POST"
       });
       setState({ status: body.test.status === "failed" ? "error" : "success", message: body.test.message });
     } catch (error) {
@@ -643,99 +721,121 @@ function HealthButton(): React.ReactElement {
   return <span className="inline-action"><button type="button" onClick={() => void run()}>Test API health</button>{state.message && <small className={`state-${state.status}`}>{state.message}</small>}</span>;
 }
 
-function useTenants(token: string) {
+function useTenants() {
   const [items, setItems] = useState<TenantSummary[]>([]);
   const [state, setState] = useState<RequestState>({ status: "loading", message: "Loading tenants..." });
   useEffect(() => {
-    if (!token) {
-      setState({ status: "error", message: "Unauthorized. Login is required." });
-      return;
-    }
-    void apiRequest<{ tenants: TenantSummary[] }>("/api/admin/tenants", { token })
+    void apiRequest<{ tenants: TenantSummary[] }>("/api/admin/tenants")
       .then((body) => {
         setItems(body.tenants);
         setState({ status: "success", message: "" });
       })
       .catch((error) => setState({ status: "error", message: errorMessage(error) }));
-  }, [token]);
+  }, []);
   return { items, state };
 }
 
-function useTenant(token: string, tenantId: string) {
+function useTenant(tenantId: string) {
   const [item, setItem] = useState<TenantSummary | null>(null);
   const [state, setState] = useState<RequestState>({ status: "loading", message: "Loading tenant..." });
   useEffect(() => {
-    if (!token) {
-      setState({ status: "error", message: "Unauthorized. Login is required." });
-      return;
-    }
-    void apiRequest<{ tenant: TenantSummary }>(`/api/admin/tenants/${tenantId}`, { token })
+    void apiRequest<{ tenant: TenantSummary }>(`/api/admin/tenants/${tenantId}`)
       .then((body) => {
         setItem(body.tenant);
         setState({ status: "success", message: "" });
       })
       .catch((error) => setState({ status: "error", message: errorMessage(error) }));
-  }, [token, tenantId]);
+  }, [tenantId]);
   return { item, state };
 }
 
-function useTenantSettings(token: string, tenantId: string) {
+function useTenantSettings(tenantId: string) {
   const [item, setItem] = useState<TenantSettings | null>(null);
   useEffect(() => {
-    if (!token) return;
-    void apiRequest<{ settings: TenantSettings }>(`/api/admin/tenants/${tenantId}/settings`, { token })
+    void apiRequest<{ settings: TenantSettings }>(`/api/admin/tenants/${tenantId}/settings`)
       .then((body) => setItem(body.settings))
       .catch(() => setItem(null));
-  }, [token, tenantId]);
+  }, [tenantId]);
   return { item };
 }
 
-function useTenantSecrets(token: string, tenantId: string) {
+function useTenantSecrets(tenantId: string) {
   const [items, setItems] = useState<TenantSecretStatus[]>([]);
   useEffect(() => {
-    if (!token) return;
-    void apiRequest<{ secrets: TenantSecretStatus[] }>(`/api/admin/tenants/${tenantId}/secrets/status`, { token })
+    void apiRequest<{ secrets: TenantSecretStatus[] }>(`/api/admin/tenants/${tenantId}/secrets/status`)
       .then((body) => setItems(body.secrets))
       .catch(() => setItems([]));
-  }, [token, tenantId]);
+  }, [tenantId]);
   return { items };
 }
 
-function useTenantTests(token: string, tenantId: string) {
+function useTenantTests(tenantId: string) {
   const [items, setItems] = useState<IntegrationTestRun[]>([]);
   useEffect(() => {
-    if (!token) return;
-    void apiRequest<{ tests: IntegrationTestRun[] }>(`/api/admin/tenants/${tenantId}/tests`, { token })
+    void apiRequest<{ tests: IntegrationTestRun[] }>(`/api/admin/tenants/${tenantId}/tests`)
       .then((body) => setItems(body.tests))
       .catch(() => setItems([]));
-  }, [token, tenantId]);
+  }, [tenantId]);
   return { items };
 }
 
-async function saveSecret(token: string, tenantId: string, name: string, value: string): Promise<void> {
-  await apiRequest(`/api/admin/tenants/${tenantId}/secrets/${name}`, {
-    method: "PUT",
-    token,
-    body: { value }
-  });
+function useTenantWebhookEvents(tenantId: string) {
+  const [items, setItems] = useState<TenantWebhookEvent[]>([]);
+  useEffect(() => {
+    void apiRequest<{ events: TenantWebhookEvent[] }>(`/api/admin/tenants/${tenantId}/webhook-events`)
+      .then((body) => setItems(body.events))
+      .catch(() => setItems([]));
+  }, [tenantId]);
+  return { items };
 }
 
-async function apiRequest<T = unknown>(path: string, options: { method?: string; token?: string; body?: unknown } = {}): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "content-type": "application/json",
-      ...(options.token ? { authorization: `Bearer ${options.token}` } : {})
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+function useTenantEvaluations(tenantId: string) {
+  const [items, setItems] = useState<TicketEvaluation[]>([]);
+  useEffect(() => {
+    void apiRequest<{ evaluations: TicketEvaluation[] }>(`/api/admin/tenants/${tenantId}/ticket-evaluations`)
+      .then((body) => setItems(body.evaluations))
+      .catch(() => setItems([]));
+  }, [tenantId]);
+  return { items };
+}
+
+function useTenantDryRunCandidates(tenantId: string) {
+  const [items, setItems] = useState<DryRunCandidate[]>([]);
+  useEffect(() => {
+    void apiRequest<{ candidates: DryRunCandidate[] }>(`/api/admin/tenants/${tenantId}/dry-run-candidates`)
+      .then((body) => setItems(body.candidates))
+      .catch(() => setItems([]));
+  }, [tenantId]);
+  return { items };
+}
+
+function useRecentWebhookEvents() {
+  const tenants = useTenants();
+  const [items, setItems] = useState<TenantWebhookEvent[]>([]);
+  useEffect(() => {
+    void Promise.all(tenants.items.map((tenant) => apiRequest<{ events: TenantWebhookEvent[] }>(`/api/admin/tenants/${tenant.id}/webhook-events`).catch(() => ({ events: [] }))))
+      .then((results) => setItems(results.flatMap((result) => result.events)));
+  }, [tenants.items.length]);
+  return items;
+}
+
+function useRecentTests() {
+  const tenants = useTenants();
+  const [items, setItems] = useState<Array<{ tenantName: string; test: IntegrationTestRun }>>([]);
+  useEffect(() => {
+    void Promise.all(tenants.items.map((tenant) => apiRequest<{ tests: IntegrationTestRun[] }>(`/api/admin/tenants/${tenant.id}/tests`)
+      .then((body) => body.tests.map((test) => ({ tenantName: tenant.name, test })))
+      .catch(() => [])))
+      .then((results) => setItems(results.flat()));
+  }, [tenants.items.length]);
+  return items;
+}
+
+async function saveSecret(tenantId: string, name: string, value: string): Promise<void> {
+  await apiRequest(`/api/admin/tenants/${tenantId}/secrets/${name}`, {
+    method: "PUT",
+    body: { value }
   });
-  const text = await response.text();
-  const body = text ? JSON.parse(text) as Record<string, unknown> : {};
-  if (!response.ok) {
-    const message = typeof body.message === "string" ? body.message : response.status === 404 ? "Endpoint not implemented or not found." : "Request failed.";
-    throw new Error(message);
-  }
-  return body as T;
 }
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }): React.ReactElement {
@@ -791,18 +891,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function generateSecret(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return btoa(String.fromCharCode(...bytes)).replace(/=+$/g, "");
-}
-
 export function renderRouteForTest(pathname: string): React.ReactElement {
   const route = routeFromPath(pathname);
   if (route.route === "login") {
     return <LoginPage onAuthenticated={() => undefined} />;
   }
-  return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} token="test-token" navigate={() => undefined}>
-    {route.route === "tenant-new" ? <NewTenantPage token="test-token" navigate={() => undefined} /> : <DashboardPage token="test-token" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
+  return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} authenticated={true} navigate={() => undefined}>
+    {route.route === "tenant-new" ? <NewTenantPage navigate={() => undefined} /> : <DashboardPage health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
   </Shell>;
 }

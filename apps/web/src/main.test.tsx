@@ -25,8 +25,9 @@ describe("admin GUI routes", () => {
     const html = renderToStaticMarkup(renderRouteForTest("/admin"));
 
     expect(html).toContain("Tenant Setup &amp; Integration Control");
-    expect(html).toContain("API online");
-    expect(html).toContain("Dry-run safe");
+    expect(html).toContain("API Online");
+    expect(html).toContain("Dry-run Safe");
+    expect(html).toContain("Authenticated");
     expect(html).toContain("Global Datto execution");
   });
 
