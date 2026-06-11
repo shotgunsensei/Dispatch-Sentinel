@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS component_registry (
   slug TEXT NOT NULL,
   description TEXT NOT NULL,
   datto_component_uid TEXT,
+  category TEXT NOT NULL DEFAULT 'automation',
   allowed_intents JSONB NOT NULL,
   allowed_asset_types JSONB NOT NULL,
   risk_level TEXT NOT NULL CHECK (risk_level IN ('low', 'medium', 'high', 'critical')),
@@ -77,6 +78,12 @@ CREATE TABLE IF NOT EXISTS component_registry (
   UNIQUE (tenant_id, slug),
   CHECK (max_runs_per_device_per_day >= 0)
 );
+
+ALTER TABLE component_registry
+  ADD COLUMN IF NOT EXISTS tenant_id TEXT REFERENCES tenants(id);
+
+ALTER TABLE component_registry
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'automation';
 
 CREATE TABLE IF NOT EXISTS webhook_events (
   id TEXT PRIMARY KEY,

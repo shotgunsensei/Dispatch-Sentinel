@@ -190,6 +190,14 @@ API readiness is exposed through `GET /health` with non-secret flags for databas
 
 Tenant BMS webhooks use `POST /api/webhooks/bms/:tenantSlug` with `x-dispatch-sentinel-secret`. Invalid tenant, inactive tenant, missing secret, or invalid secret requests are rejected before payload processing.
 
+Production tenant persistence uses Postgres through `DATABASE_URL`. For Neon, set `DATABASE_URL` to the pooled or direct Neon Postgres connection string in the API Vercel project, then apply:
+
+```powershell
+psql "$env:DATABASE_URL" -f apps/api/db/migrations/0015_phase14_production_mvp_vertical_slice.sql
+```
+
+`NODE_ENV=production` will not fall back to in-memory tenant/settings/secrets/events storage. Local in-memory stores are only used for development/test `file:` database URLs.
+
 ## Verification
 
 ```powershell

@@ -34,6 +34,8 @@ The web Vercel project requires:
 
 Changing `NEXT_PUBLIC_API_BASE_URL` requires rebuilding/redeploying the web project. The API `ADMIN_ALLOWED_ORIGIN` value must exactly match the web deployment origin when using cookie-based admin sessions.
 
+For Neon, use the Neon Postgres connection string as `DATABASE_URL`. Production rejects `file:` URLs and will not use in-memory tenant, settings, secret, webhook event, ticket evaluation, integration test, dry-run candidate, or tenant audit storage.
+
 ## Tenant Configuration
 
 Each tenant must have:
@@ -48,6 +50,8 @@ Each tenant must have:
 ## Rollout Checklist
 
 - Run migrations through `0015_phase14_production_mvp_vertical_slice.sql`.
+- Apply the Phase 14 migration to Neon:
+  `psql "$env:DATABASE_URL" -f apps/api/db/migrations/0015_phase14_production_mvp_vertical_slice.sql`
 - Seed tenants and per-tenant component registries.
 - Confirm `/healthz` reports API, database, queue, BMS adapter, and Datto RMM adapter checks.
 - Confirm `/health` returns readiness flags without secret values.

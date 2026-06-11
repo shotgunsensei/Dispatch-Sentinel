@@ -34,9 +34,28 @@ import {
   TenantSettingsRepository,
   allowedTenantSecretNames,
   type IntegrationTestRun,
+  type DryRunAutomationCandidateRepositoryLike,
+  type IntegrationTestRunRepositoryLike,
+  type TenantAuditLogRepositoryLike,
+  type TenantRepositoryLike,
   type TenantSecretName,
+  type TenantSecretRepositoryLike,
+  type TenantSettingsRepositoryLike,
+  type TenantWebhookEventRepositoryLike,
+  type TicketEvaluationRepositoryLike,
   type TenantSettings
 } from "./modules/tenants/tenant-store.js";
+import {
+  createPostgresPool,
+  PostgresDryRunAutomationCandidateRepository,
+  PostgresIntegrationTestRunRepository,
+  PostgresTenantAuditLogRepository,
+  PostgresTenantRepository,
+  PostgresTenantSecretRepository,
+  PostgresTenantSettingsRepository,
+  PostgresTenantWebhookEventRepository,
+  PostgresTicketEvaluationRepository
+} from "./modules/tenants/postgres-tenant-store.js";
 
 export interface HealthResponse {
   status: "ok";
@@ -93,14 +112,14 @@ export interface ApiDependencies {
   bmsWorkflow: BmsWorkflowService;
   adminAuthService: AdminAuthService;
   rateLimiter: InMemoryRateLimiter;
-  tenantRepository: TenantRepository;
-  tenantSecretRepository: TenantSecretRepository;
-  tenantSettingsRepository: TenantSettingsRepository;
-  tenantAuditLog: TenantAuditLogRepository;
-  integrationTestRuns: IntegrationTestRunRepository;
-  tenantWebhookEvents: TenantWebhookEventRepository;
-  ticketEvaluations: TicketEvaluationRepository;
-  dryRunCandidates: DryRunAutomationCandidateRepository;
+  tenantRepository: TenantRepositoryLike;
+  tenantSecretRepository: TenantSecretRepositoryLike;
+  tenantSettingsRepository: TenantSettingsRepositoryLike;
+  tenantAuditLog: TenantAuditLogRepositoryLike;
+  integrationTestRuns: IntegrationTestRunRepositoryLike;
+  tenantWebhookEvents: TenantWebhookEventRepositoryLike;
+  ticketEvaluations: TicketEvaluationRepositoryLike;
+  dryRunCandidates: DryRunAutomationCandidateRepositoryLike;
   encryptionService: SecretEncryptionService;
 }
 
@@ -160,8 +179,9 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
   const dattoAdapter = config.dattoRmmExecutionEnabled
     ? new RealDattoRmmAdapter(config, logger)
     : new DryRunDattoRmmAdapter(logger);
-  const approvalService = new ApprovalService(approvalRepository, componentRegistry, new MockDattoDeviceAdapter(), bmsAdapter);
   const encryptionService = new SecretEncryptionService(config.encryptionKey, config.encryptionKeyVersion);
+  const tenantStores = createTenantStores(config, encryptionService);
+  const approvalService = new ApprovalService(approvalRepository, componentRegistry, new MockDattoDeviceAdapter(), bmsAdapter);
   return {
     auditSink,
     ticketIntakeService,
@@ -196,6 +216,41 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
       sessionSecret: config.adminSessionSecret
     }),
     rateLimiter: new InMemoryRateLimiter(),
+    ...tenantStores,
+    encryptionService
+  };
+}
+
+function createTenantStores(config: ApiConfig, encryptionService: SecretEncryptionService): Pick<
+  ApiDependencies,
+  | "tenantRepository"
+  | "tenantSecretRepository"
+  | "tenantSettingsRepository"
+  | "tenantAuditLog"
+  | "integrationTestRuns"
+  | "tenantWebhookEvents"
+  | "ticketEvaluations"
+  | "dryRunCandidates"
+> {
+  if (isPostgresDatabaseUrl(config.databaseUrl)) {
+    const pool = createPostgresPool(config.databaseUrl);
+    return {
+      tenantRepository: new PostgresTenantRepository(pool),
+      tenantSecretRepository: new PostgresTenantSecretRepository(pool, encryptionService),
+      tenantSettingsRepository: new PostgresTenantSettingsRepository(pool),
+      tenantAuditLog: new PostgresTenantAuditLogRepository(pool),
+      integrationTestRuns: new PostgresIntegrationTestRunRepository(pool),
+      tenantWebhookEvents: new PostgresTenantWebhookEventRepository(pool),
+      ticketEvaluations: new PostgresTicketEvaluationRepository(pool),
+      dryRunCandidates: new PostgresDryRunAutomationCandidateRepository(pool)
+    };
+  }
+
+  if (config.nodeEnv === "production") {
+    throw new Error("DATABASE_URL must be a Postgres connection string in production.");
+  }
+
+  return {
     tenantRepository: new TenantRepository(),
     tenantSecretRepository: new TenantSecretRepository(encryptionService),
     tenantSettingsRepository: new TenantSettingsRepository(),
@@ -203,9 +258,12 @@ export function createDefaultDependencies(logger: Logger, config: ApiConfig): Ap
     integrationTestRuns: new IntegrationTestRunRepository(),
     tenantWebhookEvents: new TenantWebhookEventRepository(),
     ticketEvaluations: new TicketEvaluationRepository(),
-    dryRunCandidates: new DryRunAutomationCandidateRepository(),
-    encryptionService
+    dryRunCandidates: new DryRunAutomationCandidateRepository()
   };
+}
+
+function isPostgresDatabaseUrl(databaseUrl: string): boolean {
+  return databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://");
 }
 
 export function createRequestHandler(config: ApiConfig, logger: Logger, dependencies: ApiDependencies) {
@@ -516,7 +574,7 @@ async function handleAdminLogin(request: IncomingMessage, response: ServerRespon
 
 async function handleTenantsCollection(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
   if (request.method === "GET") {
-    const tenants = dependencies.tenantRepository.list().map((tenant) => tenantSummary(tenant.id, dependencies));
+    const tenants = await Promise.all((await dependencies.tenantRepository.list()).map((tenant) => tenantSummary(tenant.id, dependencies)));
     writeJson(response, 200, { tenants });
     return;
   }
@@ -529,9 +587,9 @@ async function handleTenantsCollection(request: IncomingMessage, response: Serve
     if (!isRecord(payload) || typeof payload.name !== "string" || typeof payload.slug !== "string") {
       throw new Error("Tenant name and slug are required.");
     }
-    const tenant = dependencies.tenantRepository.create({ name: payload.name, slug: payload.slug });
-    dependencies.tenantSettingsRepository.getOrCreate(tenant.id);
-    dependencies.tenantAuditLog.record({
+    const tenant = await dependencies.tenantRepository.create({ name: payload.name, slug: payload.slug });
+    await dependencies.tenantSettingsRepository.getOrCreate(tenant.id);
+    await dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
       type: "tenant.created",
       ticketId: null,
@@ -540,7 +598,7 @@ async function handleTenantsCollection(request: IncomingMessage, response: Serve
       outcome: "success",
       metadata: { slug: tenant.slug }
     });
-    writeJson(response, 201, { tenant: tenantSummary(tenant.id, dependencies) });
+    writeJson(response, 201, { tenant: await tenantSummary(tenant.id, dependencies) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tenant creation failed.";
     writeJson(response, message.includes("already exists") ? 409 : 400, {
@@ -565,7 +623,7 @@ async function handleTenantAdminRoute(
   }
 
   try {
-    dependencies.tenantRepository.getAny(tenantId);
+    await dependencies.tenantRepository.getAny(tenantId);
   } catch (error) {
     writeJson(response, 404, { error: "not_found", message: "Tenant not found." });
     return;
@@ -573,7 +631,7 @@ async function handleTenantAdminRoute(
 
   if (!second) {
     if (request.method === "GET") {
-      writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+      writeJson(response, 200, { tenant: await tenantSummary(tenantId, dependencies) });
       return;
     }
     if (request.method === "PATCH") {
@@ -582,11 +640,11 @@ async function handleTenantAdminRoute(
         if (!isRecord(payload)) {
           throw new Error("Tenant update must be an object.");
         }
-        const tenant = dependencies.tenantRepository.update(tenantId, {
+        const tenant = await dependencies.tenantRepository.update(tenantId, {
           name: typeof payload.name === "string" ? payload.name : undefined,
           slug: typeof payload.slug === "string" ? payload.slug : undefined
         });
-        writeJson(response, 200, { tenant: tenantSummary(tenant.id, dependencies) });
+        writeJson(response, 200, { tenant: await tenantSummary(tenant.id, dependencies) });
       } catch (error) {
         writeJson(response, 400, { error: "validation_failed", message: error instanceof Error ? error.message : "Tenant update failed." });
       }
@@ -595,14 +653,14 @@ async function handleTenantAdminRoute(
   }
 
   if (request.method === "POST" && second === "disable") {
-    dependencies.tenantRepository.disable(tenantId);
-    writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+    await dependencies.tenantRepository.disable(tenantId);
+    writeJson(response, 200, { tenant: await tenantSummary(tenantId, dependencies) });
     return;
   }
 
   if (request.method === "POST" && second === "enable") {
-    dependencies.tenantRepository.enable(tenantId);
-    writeJson(response, 200, { tenant: tenantSummary(tenantId, dependencies) });
+    await dependencies.tenantRepository.enable(tenantId);
+    writeJson(response, 200, { tenant: await tenantSummary(tenantId, dependencies) });
     return;
   }
 
@@ -622,17 +680,17 @@ async function handleTenantAdminRoute(
   }
 
   if (request.method === "GET" && second === "webhook-events") {
-    writeJson(response, 200, { events: dependencies.tenantWebhookEvents.list(tenantId) });
+    writeJson(response, 200, { events: await dependencies.tenantWebhookEvents.list(tenantId) });
     return;
   }
 
   if (request.method === "GET" && second === "ticket-evaluations") {
-    writeJson(response, 200, { evaluations: dependencies.ticketEvaluations.list(tenantId) });
+    writeJson(response, 200, { evaluations: await dependencies.ticketEvaluations.list(tenantId) });
     return;
   }
 
   if (request.method === "GET" && second === "dry-run-candidates") {
-    writeJson(response, 200, { candidates: dependencies.dryRunCandidates.list(tenantId) });
+    writeJson(response, 200, { candidates: await dependencies.dryRunCandidates.list(tenantId) });
     return;
   }
 
@@ -648,7 +706,7 @@ async function handleTenantSecretsRoute(
   dependencies: ApiDependencies
 ) {
   if (request.method === "GET" && secretName === "status") {
-    writeJson(response, 200, { secrets: dependencies.tenantSecretRepository.status(tenantId) });
+    writeJson(response, 200, { secrets: await dependencies.tenantSecretRepository.status(tenantId) });
     return;
   }
   if (!secretName || !isAllowedTenantSecretName(secretName)) {
@@ -660,30 +718,30 @@ async function handleTenantSecretsRoute(
     return;
   }
   if (request.method === "POST" && (action === "rotate" || action === "generate")) {
-    generateTenantSecret(response, tenantId, secretName, dependencies);
+    await generateTenantSecret(response, tenantId, secretName, dependencies);
     return;
   }
   if (request.method === "DELETE" && !action) {
-    dependencies.tenantSecretRepository.delete(tenantId, secretName);
+    await dependencies.tenantSecretRepository.delete(tenantId, secretName);
     writeJson(response, 200, { status: "deleted", secretName });
     return;
   }
   writeJson(response, 405, { error: "method_not_allowed", message: "Unsupported tenant secret operation." });
 }
 
-function generateTenantSecret(
+async function generateTenantSecret(
   response: ServerResponse,
   tenantId: string,
   secretName: TenantSecretName,
   dependencies: ApiDependencies
-) {
+): Promise<void> {
   if (!["bms_webhook_secret", "approval_token_secret", "component_callback_secret"].includes(secretName)) {
     writeJson(response, 400, { error: "unsupported_secret_generation", message: "This secret must be entered manually." });
     return;
   }
   const value = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-  dependencies.tenantSecretRepository.upsert(tenantId, secretName, value);
-  dependencies.tenantAuditLog.record({
+  await dependencies.tenantSecretRepository.upsert(tenantId, secretName, value);
+  await dependencies.tenantAuditLog.record({
     tenantId,
     type: "tenant.secret.generated",
     ticketId: null,
@@ -695,7 +753,7 @@ function generateTenantSecret(
   writeJson(response, 200, {
     secretName,
     value,
-    status: dependencies.tenantSecretRepository.status(tenantId).find((secret) => secret.secretName === secretName)
+    status: (await dependencies.tenantSecretRepository.status(tenantId)).find((secret) => secret.secretName === secretName)
   });
 }
 
@@ -711,8 +769,8 @@ async function saveTenantSecret(
     if (!isRecord(payload) || typeof payload.value !== "string") {
       throw new Error("Secret value is required.");
     }
-    dependencies.tenantSecretRepository.upsert(tenantId, secretName, payload.value);
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantSecretRepository.upsert(tenantId, secretName, payload.value);
+    await dependencies.tenantAuditLog.record({
       tenantId,
       type: "tenant.secret.saved",
       ticketId: null,
@@ -722,7 +780,7 @@ async function saveTenantSecret(
       metadata: { secretName }
     });
     writeJson(response, 200, {
-      secret: dependencies.tenantSecretRepository.status(tenantId).find((secret) => secret.secretName === secretName)
+      secret: (await dependencies.tenantSecretRepository.status(tenantId)).find((secret) => secret.secretName === secretName)
     });
   } catch (error) {
     writeJson(response, 400, {
@@ -739,7 +797,7 @@ async function handleTenantSettingsRoute(
   dependencies: ApiDependencies
 ) {
   if (request.method === "GET") {
-    writeJson(response, 200, { settings: dependencies.tenantSettingsRepository.getOrCreate(tenantId) });
+    writeJson(response, 200, { settings: await dependencies.tenantSettingsRepository.getOrCreate(tenantId) });
     return;
   }
   if (request.method !== "PATCH") {
@@ -749,8 +807,8 @@ async function handleTenantSettingsRoute(
   try {
     const payload = await readJsonBody(request);
     const update = parseTenantSettingsUpdate(payload);
-    const settings = dependencies.tenantSettingsRepository.update(tenantId, update);
-    dependencies.tenantAuditLog.record({
+    const settings = await dependencies.tenantSettingsRepository.update(tenantId, update);
+    await dependencies.tenantAuditLog.record({
       tenantId,
       type: "tenant.settings.updated",
       ticketId: null,
@@ -777,20 +835,20 @@ async function handleTenantTestsRoute(
   config: ApiConfig
 ) {
   if (request.method === "GET" && !testName) {
-    writeJson(response, 200, { tests: dependencies.integrationTestRuns.list(tenantId) });
+    writeJson(response, 200, { tests: await dependencies.integrationTestRuns.list(tenantId) });
     return;
   }
   if (request.method !== "POST" || !testName) {
     writeJson(response, 405, { error: "method_not_allowed", message: "Use POST for tenant integration tests." });
     return;
   }
-  const run = runIntegrationTest(tenantId, testName, dependencies, config);
+  const run = await runIntegrationTest(tenantId, testName, dependencies, config);
   writeJson(response, 200, { test: run });
 }
 
-function runIntegrationTest(tenantId: string, testName: string, dependencies: ApiDependencies, config: ApiConfig): IntegrationTestRun {
+async function runIntegrationTest(tenantId: string, testName: string, dependencies: ApiDependencies, config: ApiConfig): Promise<IntegrationTestRun> {
   const started = Date.now();
-  const settings = dependencies.tenantSettingsRepository.getOrCreate(tenantId);
+  const settings = await dependencies.tenantSettingsRepository.getOrCreate(tenantId);
   let status: IntegrationTestRun["status"] = "skipped";
   let message = "Test skipped.";
 
@@ -798,13 +856,13 @@ function runIntegrationTest(tenantId: string, testName: string, dependencies: Ap
     status = "passed";
     message = "API health is OK.";
   } else if (testName === "webhook-self-test") {
-    const secret = dependencies.tenantSecretRepository.decrypt(tenantId, "bms_webhook_secret");
+    const secret = await dependencies.tenantSecretRepository.decrypt(tenantId, "bms_webhook_secret");
     if (!secret) {
       status = "failed";
       message = "Tenant webhook secret is not configured.";
     } else {
-      evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
-      dependencies.tenantWebhookEvents.record({
+      await evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+      await dependencies.tenantWebhookEvents.record({
         tenantId,
         eventType: "ticket.created",
         source: "bms",
@@ -816,19 +874,19 @@ function runIntegrationTest(tenantId: string, testName: string, dependencies: Ap
       message = "Webhook self-test accepted and evaluated a sample printer ticket.";
     }
   } else if (testName === "classifier-sample") {
-    const evaluation = evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+    const evaluation = await evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
     status = evaluation.detectedIntent === "restart_print_spooler" ? "passed" : "failed";
     message = `Classifier detected ${evaluation.detectedIntent}.`;
   } else if (testName === "policy-sample") {
-    const evaluation = evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
+    const evaluation = await evaluateTenantWebhookPayload(tenantId, samplePrinterPayload(), dependencies);
     status = evaluation.outcome === "AUTO_ELIGIBLE_CONFIRM_CLIENT" ? "passed" : "failed";
     message = `Policy produced ${evaluation.outcome}.`;
   } else if (testName.startsWith("bms-")) {
-    const hasBmsBaseUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "bms_api_base_url"));
+    const hasBmsBaseUrl = Boolean(await dependencies.tenantSecretRepository.decrypt(tenantId, "bms_api_base_url"));
     status = hasBmsBaseUrl ? "skipped" : "skipped";
     message = hasBmsBaseUrl ? "BMS live auth is not implemented in MVP; dry-run prerequisites are configured." : "BMS credentials are missing.";
   } else if (testName.startsWith("datto-")) {
-    const hasDattoUrl = Boolean(dependencies.tenantSecretRepository.decrypt(tenantId, "datto_rmm_api_url"));
+    const hasDattoUrl = Boolean(await dependencies.tenantSecretRepository.decrypt(tenantId, "datto_rmm_api_url"));
     const liveAllowed = config.dattoRmmExecutionEnabled && settings.dattoExecutionEnabled && settings.executionMode === "live";
     status = "skipped";
     message = hasDattoUrl
@@ -842,14 +900,14 @@ function runIntegrationTest(tenantId: string, testName: string, dependencies: Ap
     message = "Unknown integration test.";
   }
 
-  const run = dependencies.integrationTestRuns.record({
+  const run = await dependencies.integrationTestRuns.record({
     tenantId,
     testType: testName,
     status,
     message,
     durationMs: Date.now() - started
   });
-  dependencies.tenantAuditLog.record({
+  await dependencies.tenantAuditLog.record({
     tenantId,
     type: "tenant.integration_test.completed",
     ticketId: null,
@@ -1283,9 +1341,9 @@ async function handleTenantBmsWebhook(
   const tenantSlug = decodeURIComponent(url.pathname.replace("/api/webhooks/bms/", ""));
   let tenant;
   try {
-    tenant = dependencies.tenantRepository.getBySlug(tenantSlug);
+    tenant = await dependencies.tenantRepository.getBySlug(tenantSlug);
   } catch {
-    dependencies.tenantWebhookEvents.record({
+    await dependencies.tenantWebhookEvents.record({
       tenantId: null,
       eventType: "unknown",
       source: "bms",
@@ -1298,7 +1356,7 @@ async function handleTenantBmsWebhook(
   }
 
   if (tenant.status !== "active") {
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
       type: "tenant.bms.webhook.rejected",
       ticketId: null,
@@ -1307,7 +1365,7 @@ async function handleTenantBmsWebhook(
       outcome: "rejected",
       metadata: { reason: "tenant_inactive" }
     });
-    dependencies.tenantWebhookEvents.record({
+    await dependencies.tenantWebhookEvents.record({
       tenantId: tenant.id,
       eventType: "unknown",
       source: "bms",
@@ -1319,9 +1377,9 @@ async function handleTenantBmsWebhook(
     return;
   }
 
-  const expectedSecret = dependencies.tenantSecretRepository.decrypt(tenant.id, "bms_webhook_secret");
+  const expectedSecret = await dependencies.tenantSecretRepository.decrypt(tenant.id, "bms_webhook_secret");
   if (!expectedSecret) {
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
       type: "tenant.bms.webhook.rejected",
       ticketId: null,
@@ -1330,7 +1388,7 @@ async function handleTenantBmsWebhook(
       outcome: "rejected",
       metadata: { reason: "secret_not_configured" }
     });
-    dependencies.tenantWebhookEvents.record({
+    await dependencies.tenantWebhookEvents.record({
       tenantId: tenant.id,
       eventType: "unknown",
       source: "bms",
@@ -1343,7 +1401,7 @@ async function handleTenantBmsWebhook(
   }
 
   if (request.headers["x-dispatch-sentinel-secret"] !== expectedSecret) {
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
       type: "tenant.bms.webhook.rejected",
       ticketId: null,
@@ -1352,7 +1410,7 @@ async function handleTenantBmsWebhook(
       outcome: "rejected",
       metadata: { reason: "invalid_secret" }
     });
-    dependencies.tenantWebhookEvents.record({
+    await dependencies.tenantWebhookEvents.record({
       tenantId: tenant.id,
       eventType: "unknown",
       source: "bms",
@@ -1369,7 +1427,7 @@ async function handleTenantBmsWebhook(
   try {
     payload = parseGenericBmsWebhookPayload(await readJsonBody(request));
   } catch (error) {
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantAuditLog.record({
       tenantId: tenant.id,
       type: "tenant.bms.webhook.rejected",
       ticketId: null,
@@ -1378,7 +1436,7 @@ async function handleTenantBmsWebhook(
       outcome: "error",
       metadata: { reason: "invalid_payload" }
     });
-    dependencies.tenantWebhookEvents.record({
+    await dependencies.tenantWebhookEvents.record({
       tenantId: tenant.id,
       eventType: "unknown",
       source: "bms",
@@ -1390,7 +1448,7 @@ async function handleTenantBmsWebhook(
     return;
   }
 
-  dependencies.tenantWebhookEvents.record({
+  await dependencies.tenantWebhookEvents.record({
     tenantId: tenant.id,
     eventType: payload.event,
     source: "bms",
@@ -1398,7 +1456,7 @@ async function handleTenantBmsWebhook(
     reason: null,
     payloadSummary: { ticketId: payload.ticketId, title: payload.title }
   });
-  dependencies.tenantAuditLog.record({
+  await dependencies.tenantAuditLog.record({
     tenantId: tenant.id,
     type: "tenant.bms.webhook.accepted",
     ticketId: payload.ticketId,
@@ -1407,7 +1465,7 @@ async function handleTenantBmsWebhook(
     outcome: "success",
     metadata: { eventType: payload.event }
   });
-  const evaluation = evaluateTenantWebhookPayload(tenant.id, payload, dependencies);
+  const evaluation = await evaluateTenantWebhookPayload(tenant.id, payload, dependencies);
   writeJson(response, 202, {
     accepted: true,
     tenantId: tenant.id,
@@ -1488,7 +1546,7 @@ function parseGenericBmsWebhookPayload(payload: unknown): GenericBmsWebhookPaylo
   };
 }
 
-function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebhookPayload, dependencies: ApiDependencies) {
+async function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebhookPayload, dependencies: ApiDependencies) {
   const now = new Date().toISOString();
   const ticket: Ticket = {
     id: `ticket:${payload.ticketId}`,
@@ -1544,7 +1602,7 @@ function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebho
       reasons: ["MVP webhook self-test uses explicit safe workstation context."]
     } : null
   });
-  const evaluation = dependencies.ticketEvaluations.record({
+  const evaluation = await dependencies.ticketEvaluations.record({
     tenantId,
     externalTicketId: payload.ticketId,
     title: payload.title,
@@ -1554,7 +1612,7 @@ function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebho
     reasons: decision.reasons,
     matchedComponentId: decision.componentRegistryEntryId
   });
-  dependencies.tenantAuditLog.record({
+  await dependencies.tenantAuditLog.record({
     tenantId,
     type: "ticket.evaluation.completed",
     ticketId: ticket.id,
@@ -1564,7 +1622,7 @@ function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebho
     metadata: { outcome: decision.outcome, confidence: decision.confidence }
   });
   if (decision.componentRegistryEntryId && decision.outcome === "AUTO_ELIGIBLE_CONFIRM_CLIENT") {
-    dependencies.dryRunCandidates.record({
+    await dependencies.dryRunCandidates.record({
       tenantId,
       ticketEvaluationId: evaluation.id,
       ticketId: ticket.id,
@@ -1572,7 +1630,7 @@ function evaluateTenantWebhookPayload(tenantId: string, payload: GenericBmsWebho
       outcome: decision.outcome,
       status: "created"
     });
-    dependencies.tenantAuditLog.record({
+    await dependencies.tenantAuditLog.record({
       tenantId,
       type: "automation.dry_run_candidate.created",
       ticketId: ticket.id,
@@ -1777,11 +1835,11 @@ function healthChecks(config: ApiConfig, dependencies: ApiDependencies): HealthR
   };
 }
 
-function tenantSummary(tenantId: string, dependencies: ApiDependencies) {
-  const tenant = dependencies.tenantRepository.getAny(tenantId);
-  const secrets = dependencies.tenantSecretRepository.status(tenantId);
-  const settings = dependencies.tenantSettingsRepository.getOrCreate(tenantId);
-  const tests = dependencies.integrationTestRuns.list(tenantId);
+async function tenantSummary(tenantId: string, dependencies: ApiDependencies) {
+  const tenant = await dependencies.tenantRepository.getAny(tenantId);
+  const secrets = await dependencies.tenantSecretRepository.status(tenantId);
+  const settings = await dependencies.tenantSettingsRepository.getOrCreate(tenantId);
+  const tests = await dependencies.integrationTestRuns.list(tenantId);
   const configured = (name: TenantSecretName) => secrets.find((secret) => secret.secretName === name)?.configured ?? false;
   return {
     ...tenant,

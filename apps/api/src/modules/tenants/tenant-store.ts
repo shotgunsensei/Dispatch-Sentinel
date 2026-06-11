@@ -17,6 +17,8 @@ export interface TenantCreateInput {
   now?: Date;
 }
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export type TenantSecretName =
   | "bms_api_base_url"
   | "bms_api_username"
@@ -117,6 +119,54 @@ export interface DryRunAutomationCandidate {
   outcome: string;
   status: "created";
   createdAt: string;
+}
+
+export interface TenantRepositoryLike {
+  create(input: TenantCreateInput): MaybePromise<Tenant>;
+  get(tenantId: string): MaybePromise<Tenant>;
+  getAny(tenantId: string): MaybePromise<Tenant>;
+  getBySlug(slug: string): MaybePromise<Tenant>;
+  update(tenantId: string, input: Partial<Pick<Tenant, "name" | "slug">>, now?: Date): MaybePromise<Tenant>;
+  disable(tenantId: string, now?: Date): MaybePromise<Tenant>;
+  enable(tenantId: string, now?: Date): MaybePromise<Tenant>;
+  list(): MaybePromise<Tenant[]>;
+}
+
+export interface TenantSecretRepositoryLike {
+  upsert(tenantId: string, secretName: TenantSecretName, value: string, now?: Date): MaybePromise<TenantSecretRecord>;
+  delete(tenantId: string, secretName: TenantSecretName): MaybePromise<boolean>;
+  decrypt(tenantId: string, secretName: TenantSecretName): MaybePromise<string | null>;
+  status(tenantId: string): MaybePromise<TenantSecretStatus[]>;
+}
+
+export interface TenantSettingsRepositoryLike {
+  getOrCreate(tenantId: string, now?: Date): MaybePromise<TenantSettings>;
+  update(tenantId: string, update: Partial<Omit<TenantSettings, "tenantId" | "updatedAt">>, now?: Date): MaybePromise<TenantSettings>;
+}
+
+export interface IntegrationTestRunRepositoryLike {
+  record(run: Omit<IntegrationTestRun, "id" | "createdAt">, now?: Date): MaybePromise<IntegrationTestRun>;
+  list(tenantId: string): MaybePromise<IntegrationTestRun[]>;
+}
+
+export interface TenantWebhookEventRepositoryLike {
+  record(event: Omit<TenantWebhookEvent, "id" | "createdAt">, now?: Date): MaybePromise<TenantWebhookEvent>;
+  list(tenantId?: string): MaybePromise<TenantWebhookEvent[]>;
+}
+
+export interface TicketEvaluationRepositoryLike {
+  record(evaluation: Omit<TicketEvaluationRecord, "id" | "createdAt">, now?: Date): MaybePromise<TicketEvaluationRecord>;
+  list(tenantId?: string): MaybePromise<TicketEvaluationRecord[]>;
+}
+
+export interface DryRunAutomationCandidateRepositoryLike {
+  record(candidate: Omit<DryRunAutomationCandidate, "id" | "createdAt">, now?: Date): MaybePromise<DryRunAutomationCandidate>;
+  list(tenantId?: string): MaybePromise<DryRunAutomationCandidate[]>;
+}
+
+export interface TenantAuditLogRepositoryLike {
+  record(event: Omit<TenantAuditEvent, "id" | "createdAt">, now?: Date): MaybePromise<TenantAuditEvent>;
+  list(tenantId: string): MaybePromise<TenantAuditEvent[]>;
 }
 
 export class TenantRepository {

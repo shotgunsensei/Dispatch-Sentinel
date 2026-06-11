@@ -175,6 +175,12 @@ describe("API server", () => {
     }
   });
 
+  it("does not allow production to use local in-memory tenant stores", () => {
+    const config = testConfig({ nodeEnv: "production", databaseUrl: "file:./test.sqlite" });
+
+    expect(() => createApiServer(config, createLogger("error"))).toThrow("DATABASE_URL must be a Postgres connection string in production.");
+  });
+
   it("does not return secret values in public health output", async () => {
     const fixture = await startTestApi({
       config: {
