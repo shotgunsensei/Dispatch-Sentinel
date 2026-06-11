@@ -461,6 +461,112 @@ describe("API server", () => {
     }
   });
 
+  it("uses the same session cookie for me, tenants, and overview admin routes", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const cookie = await loginCookieWithSetupToken(fixture.port);
+      const me = await cookieFetch(fixture.port, cookie, "/api/admin/me");
+      const tenants = await cookieFetch(fixture.port, cookie, "/api/admin/tenants");
+      const overview = await cookieFetch(fixture.port, cookie, "/api/admin/overview");
+      const created = await cookieFetch(fixture.port, cookie, "/api/admin/tenants", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Cookie Tenant", slug: "cookie-tenant" })
+      });
+      const duplicate = await cookieFetch(fixture.port, cookie, "/api/admin/tenants", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Cookie Tenant Again", slug: "cookie-tenant" })
+      });
+      const deniedTenants = await fetch(`http://127.0.0.1:${fixture.port}/api/admin/tenants`);
+      const deniedCreate = await fetch(`http://127.0.0.1:${fixture.port}/api/admin/tenants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Denied Tenant", slug: "denied-tenant" })
+      });
+
+      expect(me.status).toBe(200);
+      expect(tenants.status).toBe(200);
+      expect(overview.status).toBe(200);
+      expect(created.status).toBe(201);
+      expect(duplicate.status).toBe(409);
+      expect(deniedTenants.status).toBe(401);
+      expect(deniedCreate.status).toBe(401);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("allows credentialed preflight for tenant creation from the configured admin origin", async () => {
+    const fixture = await startTestApi({ config: { adminAllowedOrigin: "https://web.example.test", nodeEnv: "production", databaseUrl: "postgres://user:pass@127.0.0.1:5432/db" } });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${fixture.port}/api/admin/tenants`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://web.example.test",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type"
+        }
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get("access-control-allow-origin")).toBe("https://web.example.test");
+      expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+      expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("clears the admin session cookie on logout", async () => {
+    const fixture = await startTestApi();
+
+    try {
+      const cookie = await loginCookieWithSetupToken(fixture.port);
+      const logout = await cookieFetch(fixture.port, cookie, "/api/admin/logout", { method: "POST" });
+      const nextCookie = logout.headers.get("set-cookie") ?? "";
+
+      expect(logout.status).toBe(200);
+      expect(nextCookie).toContain("dispatch_sentinel_admin=");
+      expect(nextCookie).toContain("Path=/");
+      expect(nextCookie).toContain("SameSite=Lax");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("sets secure cross-site admin cookie options in production", async () => {
+    const fixture = await startTestApi({ config: { nodeEnv: "production", databaseUrl: "postgres://user:pass@127.0.0.1:5432/db" } });
+
+    try {
+      const cookie = await loginCookieWithSetupToken(fixture.port);
+
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).toContain("SameSite=None");
+      expect(cookie).toContain("Path=/");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("sets secure cross-site admin cookie options when an HTTPS admin origin is configured", async () => {
+    const fixture = await startTestApi({ config: { nodeEnv: "test", adminAllowedOrigin: "https://web.example.test" } });
+
+    try {
+      const cookie = await loginCookieWithSetupToken(fixture.port);
+
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+      expect(cookie).toContain("SameSite=None");
+      expect(cookie).toContain("Path=/");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("supports setup-token admin login and tenant creation", async () => {
     const fixture = await startTestApi();
 
@@ -882,6 +988,29 @@ async function loginWithSetupToken(port: number): Promise<string> {
   });
   const body = await response.json() as { token: string };
   return body.token;
+}
+
+async function loginCookieWithSetupToken(port: number): Promise<string> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/admin/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "local-admin-setup-token" })
+  });
+  const cookie = response.headers.get("set-cookie");
+  if (!cookie) {
+    throw new Error("Login did not return an admin session cookie.");
+  }
+  return cookie;
+}
+
+async function cookieFetch(port: number, cookie: string, path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}${path}`, {
+    ...init,
+    headers: {
+      ...(init.headers as Record<string, string> | undefined),
+      cookie
+    }
+  });
 }
 
 async function adminFetch(port: number, token: string, path: string, init: RequestInit = {}): Promise<Response> {

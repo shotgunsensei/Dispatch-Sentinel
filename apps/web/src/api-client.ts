@@ -10,8 +10,22 @@ export class ApiRequestError extends Error {
   }
 }
 
+let unauthorizedHandler: (() => void) | null = null;
+
+export interface CreatedTenant {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "disabled";
+  webhookUrl: string;
+}
+
 export function hasApiBaseUrl(): boolean {
   return apiBaseUrl.length > 0;
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
 }
 
 export async function apiRequest<T = unknown>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
@@ -31,8 +45,18 @@ export async function apiRequest<T = unknown>(path: string, options: { method?: 
   const body = text ? JSON.parse(text) as Record<string, unknown> : {};
   if (!response.ok) {
     const message = typeof body.message === "string" ? body.message : response.status === 401 ? "Unauthorized. Login is required." : "Request failed.";
+    if (response.status === 401 && path.startsWith("/api/admin/") && path !== "/api/admin/login") {
+      unauthorizedHandler?.();
+    }
     throw new ApiRequestError(message, response.status);
   }
   return body as T;
 }
 
+export async function createTenant(input: { name: string; slug: string }): Promise<CreatedTenant> {
+  const body = await apiRequest<{ tenant: CreatedTenant }>("/api/admin/tenants", {
+    method: "POST",
+    body: input
+  });
+  return body.tenant;
+}

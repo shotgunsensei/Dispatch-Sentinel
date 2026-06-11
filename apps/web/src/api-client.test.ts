@@ -24,6 +24,72 @@ describe("web API client", () => {
     }));
   });
 
+  it("runs the centralized unauthorized handler for protected admin 401 responses", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Admin authentication is required." }), { status: 401 })));
+    const { apiRequest, setUnauthorizedHandler } = await import("./api-client.js");
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    await expect(apiRequest("/api/admin/tenants")).rejects.toMatchObject({
+      status: 401
+    });
+
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run the unauthorized handler for failed login attempts", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Invalid admin credentials." }), { status: 401 })));
+    const { apiRequest, setUnauthorizedHandler } = await import("./api-client.js");
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    await expect(apiRequest("/api/admin/login", { method: "POST", body: { token: "wrong" } })).rejects.toMatchObject({
+      status: 401
+    });
+
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("createTenant posts through the API base URL with credentials included", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      tenant: {
+        id: "tenant-acme",
+        name: "Acme",
+        slug: "acme",
+        status: "active",
+        webhookUrl: "/api/webhooks/bms/acme"
+      }
+    }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { createTenant } = await import("./api-client.js");
+
+    const tenant = await createTenant({ name: "Acme", slug: "acme" });
+
+    expect(tenant.id).toBe("tenant-acme");
+    expect(fetchMock).toHaveBeenCalledWith("https://api.example.test/api/admin/tenants", expect.objectContaining({
+      method: "POST",
+      credentials: "include",
+      body: JSON.stringify({ name: "Acme", slug: "acme" })
+    }));
+  });
+
+  it("createTenant triggers the centralized redirect path on 401", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Admin authentication is required." }), { status: 401 })));
+    const { createTenant, setUnauthorizedHandler } = await import("./api-client.js");
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    await expect(createTenant({ name: "Acme", slug: "acme" })).rejects.toMatchObject({
+      status: 401
+    });
+
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
   it("reports missing API base URL as an offline configuration error", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "");
     const { apiRequest } = await import("./api-client.js");
@@ -35,4 +101,3 @@ describe("web API client", () => {
     });
   });
 });
-

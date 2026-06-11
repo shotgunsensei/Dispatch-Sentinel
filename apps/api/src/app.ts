@@ -1903,7 +1903,7 @@ function applyCors(request: IncomingMessage, response: ServerResponse, config: A
 }
 
 function adminSessionCookie(token: string, expiresAt: string, config: ApiConfig): string {
-  const secure = config.nodeEnv === "production";
+  const secure = shouldUseCrossSiteCookie(config);
   return [
     `dispatch_sentinel_admin=${encodeURIComponent(token)}`,
     "Path=/",
@@ -1915,14 +1915,19 @@ function adminSessionCookie(token: string, expiresAt: string, config: ApiConfig)
 }
 
 function expiredAdminCookie(config: ApiConfig): string {
+  const secure = shouldUseCrossSiteCookie(config);
   return [
     "dispatch_sentinel_admin=",
     "Path=/",
     "HttpOnly",
     "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-    config.nodeEnv === "production" ? "Secure" : "",
-    config.nodeEnv === "production" ? "SameSite=None" : "SameSite=Lax"
+    secure ? "Secure" : "",
+    secure ? "SameSite=None" : "SameSite=Lax"
   ].filter(Boolean).join("; ");
+}
+
+function shouldUseCrossSiteCookie(config: ApiConfig): boolean {
+  return config.nodeEnv === "production" || Boolean(config.adminAllowedOrigin?.startsWith("https://"));
 }
 
 function adminTokenFromRequest(request: IncomingMessage): string | null {

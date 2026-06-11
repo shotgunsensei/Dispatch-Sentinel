@@ -1,7 +1,7 @@
 "use client";
 
 import React, { FormEvent, useEffect, useState } from "react";
-import { apiBaseUrl, apiRequest, ApiRequestError, hasApiBaseUrl } from "./api-client";
+import { apiBaseUrl, apiRequest, ApiRequestError, createTenant, hasApiBaseUrl, setUnauthorizedHandler } from "./api-client";
 
 type RouteName = "login" | "dashboard" | "tenants" | "tenant-new" | "tenant-detail" | "tenant-secrets" | "tenant-tests";
 type ApiStatus = "checking" | "online" | "offline";
@@ -111,6 +111,7 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
   const [authStatus, setAuthStatus] = useState<AuthStatus>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
+  const [dataVersion, setDataVersion] = useState(0);
 
   useEffect(() => {
     const onPop = () => setRoute(routeFromPath(window.location.pathname));
@@ -155,14 +156,33 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
   };
 
   useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthStatus("unauthenticated");
+      setDataVersion((current) => current + 1);
+      if (window.location.pathname !== "/admin/login") {
+        navigate("/admin/login");
+      }
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  useEffect(() => {
     if (authStatus === "unauthenticated" && route.route !== "login") {
       navigate("/admin/login");
     }
   }, [authStatus, route.route]);
 
   const onAuthenticated = () => {
-    setAuthStatus("authenticated");
-    navigate("/admin");
+    void apiRequest<{ authenticated: boolean }>("/api/admin/me")
+      .then(() => {
+        setAuthStatus("authenticated");
+        setDataVersion((current) => current + 1);
+        navigate("/admin");
+      })
+      .catch(() => {
+        setAuthStatus("unauthenticated");
+        navigate("/admin/login");
+      });
   };
 
   if (!hasApiBaseUrl()) {
@@ -178,16 +198,17 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
       apiStatus={apiStatus}
       health={health}
       activeRoute={route.route}
-      authenticated={authStatus === "authenticated"}
+      authStatus={authStatus}
       navigate={navigate}
     >
-      {authStatus !== "authenticated" && <Panel title="Admin Login Required"><p className="muted">Redirecting to admin login...</p></Panel>}
-      {authStatus === "authenticated" && route.route === "tenants" && <TenantListPage navigate={navigate} />}
-      {authStatus === "authenticated" && route.route === "tenant-new" && <NewTenantPage navigate={navigate} />}
+      {authStatus === "checking" && <Panel title="Checking Session"><p className="muted">Loading admin session...</p></Panel>}
+      {authStatus === "unauthenticated" && <Panel title="Admin Login Required"><p className="muted">Redirecting to admin login...</p></Panel>}
+      {authStatus === "authenticated" && route.route === "tenants" && <TenantListPage key={`tenants-${dataVersion}`} navigate={navigate} />}
+      {authStatus === "authenticated" && route.route === "tenant-new" && <NewTenantPage key={`tenant-new-${dataVersion}`} navigate={navigate} />}
       {(route.route === "tenant-detail" || route.route === "tenant-secrets" || route.route === "tenant-tests") && route.tenantId && (
-        authStatus === "authenticated" && <TenantDetailPage tenantId={route.tenantId} activeRoute={route.route} navigate={navigate} />
+        authStatus === "authenticated" && <TenantDetailPage key={`${route.tenantId}-${dataVersion}`} tenantId={route.tenantId} activeRoute={route.route} navigate={navigate} />
       )}
-      {authStatus === "authenticated" && route.route === "dashboard" && <DashboardPage health={health} />}
+      {authStatus === "authenticated" && route.route === "dashboard" && <DashboardPage key={`dashboard-${dataVersion}`} health={health} />}
     </Shell>
   );
 }
@@ -197,10 +218,11 @@ function Shell(props: {
   apiStatus: ApiStatus;
   health: HealthResponse | null;
   activeRoute: RouteName;
-  authenticated: boolean;
+  authStatus: AuthStatus;
   navigate: (href: string) => void;
 }): React.ReactElement {
   const liveEnabled = Boolean(props.health?.dattoExecutionGloballyEnabled);
+  const authLabel = props.authStatus === "authenticated" ? "Authenticated" : props.authStatus === "checking" ? "Checking Auth" : "Unauthorized";
   return (
     <section className="app-shell">
       <aside className="sidebar" aria-label="Admin navigation">
@@ -235,7 +257,7 @@ function Shell(props: {
               {props.apiStatus === "online" ? "API Online" : props.apiStatus === "checking" ? "API Checking" : "API Offline"}
             </Badge>
             <Badge tone={liveEnabled ? "bad" : "good"}>{liveEnabled ? "Live Execution Enabled" : "Dry-run Safe"}</Badge>
-            <Badge tone={props.authenticated ? "good" : "warn"}>{props.authenticated ? "Authenticated" : "Unauthorized"}</Badge>
+            <Badge tone={props.authStatus === "authenticated" ? "good" : "warn"}>{authLabel}</Badge>
           </div>
         </header>
         {props.children}
@@ -388,13 +410,13 @@ function NewTenantPage({ navigate }: { navigate: (href: string) => void }): Reac
     event.preventDefault();
     setState({ status: "loading", message: "Creating tenant..." });
     try {
-      const body = await apiRequest<{ tenant: TenantSummary }>("/api/admin/tenants", {
-        method: "POST",
-        body: { name, slug }
-      });
+      const tenant = await createTenant({ name, slug });
       setState({ status: "success", message: "Tenant created." });
-      navigate(`/admin/tenants/${body.tenant.id}`);
+      navigate(`/admin/tenants/${tenant.id}`);
     } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 401) {
+        return;
+      }
       setState({ status: "error", message: errorMessage(error) });
     }
   }
@@ -896,7 +918,7 @@ export function renderRouteForTest(pathname: string): React.ReactElement {
   if (route.route === "login") {
     return <LoginPage onAuthenticated={() => undefined} />;
   }
-  return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} authenticated={true} navigate={() => undefined}>
+  return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} authStatus="authenticated" navigate={() => undefined}>
     {route.route === "tenant-new" ? <NewTenantPage navigate={() => undefined} /> : <DashboardPage health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
   </Shell>;
 }
