@@ -1904,10 +1904,12 @@ function applyCors(request: IncomingMessage, response: ServerResponse, config: A
 
 function adminSessionCookie(token: string, expiresAt: string, config: ApiConfig): string {
   const secure = shouldUseCrossSiteCookie(config);
+  const maxAgeSeconds = Math.max(config.adminSessionTtlMinutes * 60, 28_800);
   return [
     `dispatch_sentinel_admin=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
+    `Max-Age=${maxAgeSeconds}`,
     `Expires=${new Date(expiresAt).toUTCString()}`,
     secure ? "Secure" : "",
     secure ? "SameSite=None" : "SameSite=Lax"
@@ -1920,6 +1922,7 @@ function expiredAdminCookie(config: ApiConfig): string {
     "dispatch_sentinel_admin=",
     "Path=/",
     "HttpOnly",
+    "Max-Age=0",
     "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
     secure ? "Secure" : "",
     secure ? "SameSite=None" : "SameSite=Lax"

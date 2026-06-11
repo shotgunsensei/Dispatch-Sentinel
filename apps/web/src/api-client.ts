@@ -3,14 +3,17 @@ export const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "
 export class ApiRequestError extends Error {
   constructor(
     message: string,
-    readonly status: number | null = null
+    readonly status: number | null = null,
+    readonly sessionStillValid = false
   ) {
     super(message);
     this.name = "ApiRequestError";
   }
 }
 
-let unauthorizedHandler: (() => void) | null = null;
+type UnauthorizedHandler = (path: string) => Promise<"authenticated" | "unauthenticated" | void> | "authenticated" | "unauthenticated" | void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
 
 export interface CreatedTenant {
   id: string;
@@ -24,11 +27,11 @@ export function hasApiBaseUrl(): boolean {
   return apiBaseUrl.length > 0;
 }
 
-export function setUnauthorizedHandler(handler: (() => void) | null): void {
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
   unauthorizedHandler = handler;
 }
 
-export async function apiRequest<T = unknown>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function apiRequest<T = unknown>(path: string, options: { method?: string; body?: unknown; skipUnauthorizedHandler?: boolean } = {}): Promise<T> {
   if (!apiBaseUrl) {
     throw new ApiRequestError("NEXT_PUBLIC_API_BASE_URL is not configured.", null);
   }
@@ -45,10 +48,12 @@ export async function apiRequest<T = unknown>(path: string, options: { method?: 
   const body = text ? JSON.parse(text) as Record<string, unknown> : {};
   if (!response.ok) {
     const message = typeof body.message === "string" ? body.message : response.status === 401 ? "Unauthorized. Login is required." : "Request failed.";
+    let sessionStillValid = false;
     if (response.status === 401 && path.startsWith("/api/admin/") && path !== "/api/admin/login") {
-      unauthorizedHandler?.();
+      const authResult = options.skipUnauthorizedHandler ? undefined : await unauthorizedHandler?.(path);
+      sessionStillValid = authResult === "authenticated";
     }
-    throw new ApiRequestError(message, response.status);
+    throw new ApiRequestError(message, response.status, sessionStillValid);
   }
   return body as T;
 }

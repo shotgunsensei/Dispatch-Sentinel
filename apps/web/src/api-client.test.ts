@@ -38,6 +38,18 @@ describe("web API client", () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it("marks 401 requests as still authenticated when the handler confirms the session", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Admin authentication is required." }), { status: 401 })));
+    const { apiRequest, setUnauthorizedHandler } = await import("./api-client.js");
+    setUnauthorizedHandler(() => "authenticated");
+
+    await expect(apiRequest("/api/admin/tenants")).rejects.toMatchObject({
+      status: 401,
+      sessionStillValid: true
+    });
+  });
+
   it("does not run the unauthorized handler for failed login attempts", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Invalid admin credentials." }), { status: 401 })));
@@ -88,6 +100,46 @@ describe("web API client", () => {
     });
 
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("createTenant preserves session-valid 401 state for the form to show retry messaging", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Admin authentication is required." }), { status: 401 })));
+    const { createTenant, setUnauthorizedHandler } = await import("./api-client.js");
+    setUnauthorizedHandler(() => "authenticated");
+
+    await expect(createTenant({ name: "Acme", slug: "acme" })).rejects.toMatchObject({
+      status: 401,
+      sessionStillValid: true
+    });
+  });
+
+  it("createTenant reports duplicate slug without invoking logout handling", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Tenant already exists." }), { status: 409 })));
+    const { createTenant, setUnauthorizedHandler } = await import("./api-client.js");
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    await expect(createTenant({ name: "Acme", slug: "acme" })).rejects.toMatchObject({
+      status: 409,
+      message: "Tenant already exists."
+    });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("createTenant reports server errors without invoking logout handling", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Tenant creation failed." }), { status: 500 })));
+    const { createTenant, setUnauthorizedHandler } = await import("./api-client.js");
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+
+    await expect(createTenant({ name: "Acme", slug: "acme" })).rejects.toMatchObject({
+      status: 500,
+      message: "Tenant creation failed."
+    });
+    expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
   it("reports missing API base URL as an offline configuration error", async () => {

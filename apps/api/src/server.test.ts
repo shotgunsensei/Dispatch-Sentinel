@@ -531,6 +531,7 @@ describe("API server", () => {
       expect(logout.status).toBe(200);
       expect(nextCookie).toContain("dispatch_sentinel_admin=");
       expect(nextCookie).toContain("Path=/");
+      expect(nextCookie).toContain("Max-Age=0");
       expect(nextCookie).toContain("SameSite=Lax");
     } finally {
       await fixture.stop();
@@ -544,6 +545,7 @@ describe("API server", () => {
       const cookie = await loginCookieWithSetupToken(fixture.port);
 
       expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Max-Age=28800");
       expect(cookie).toContain("Secure");
       expect(cookie).toContain("SameSite=None");
       expect(cookie).toContain("Path=/");
@@ -559,6 +561,7 @@ describe("API server", () => {
       const cookie = await loginCookieWithSetupToken(fixture.port);
 
       expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Max-Age=28800");
       expect(cookie).toContain("Secure");
       expect(cookie).toContain("SameSite=None");
       expect(cookie).toContain("Path=/");

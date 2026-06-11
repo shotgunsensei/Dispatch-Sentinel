@@ -29,6 +29,7 @@ describe("admin GUI routes", () => {
     expect(html).toContain("Dry-run Safe");
     expect(html).toContain("Authenticated");
     expect(html).toContain("Global Datto execution");
+    expect(html).not.toContain("Admin authentication is required");
   });
 
   it("renders new tenant form", () => {

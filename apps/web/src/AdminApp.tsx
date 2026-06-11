@@ -143,7 +143,10 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
     void apiRequest<{ authenticated: boolean }>("/api/admin/me")
       .then(() => setAuthStatus("authenticated"))
       .catch((error) => {
-        setAuthStatus("unauthenticated");
+        if (error instanceof ApiRequestError && error.status === 401) {
+          setAuthStatus("unauthenticated");
+          return;
+        }
         if (!(error instanceof ApiRequestError) || error.status !== 401) {
           setApiStatus("offline");
         }
@@ -156,12 +159,25 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
   };
 
   useEffect(() => {
-    setUnauthorizedHandler(() => {
+    setUnauthorizedHandler(async (path) => {
+      if (path !== "/api/admin/me") {
+        try {
+          await apiRequest<{ authenticated: boolean }>("/api/admin/me", { skipUnauthorizedHandler: true });
+          setAuthStatus("authenticated");
+          return "authenticated";
+        } catch (error) {
+          if (!(error instanceof ApiRequestError) || error.status !== 401) {
+            setApiStatus("offline");
+            return undefined;
+          }
+        }
+      }
       setAuthStatus("unauthenticated");
       setDataVersion((current) => current + 1);
       if (window.location.pathname !== "/admin/login") {
         navigate("/admin/login");
       }
+      return "unauthenticated";
     });
     return () => setUnauthorizedHandler(null);
   }, []);
@@ -172,17 +188,19 @@ export function AdminApp({ initialPath }: { initialPath: string }): React.ReactE
     }
   }, [authStatus, route.route]);
 
-  const onAuthenticated = () => {
-    void apiRequest<{ authenticated: boolean }>("/api/admin/me")
-      .then(() => {
-        setAuthStatus("authenticated");
-        setDataVersion((current) => current + 1);
-        navigate("/admin");
-      })
-      .catch(() => {
+  const onAuthenticated = async () => {
+    try {
+      await apiRequest<{ authenticated: boolean }>("/api/admin/me", { skipUnauthorizedHandler: true });
+      setAuthStatus("authenticated");
+      setDataVersion((current) => current + 1);
+      navigate("/admin");
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 401) {
         setAuthStatus("unauthenticated");
         navigate("/admin/login");
-      });
+      }
+      throw error;
+    }
   };
 
   if (!hasApiBaseUrl()) {
@@ -266,7 +284,7 @@ function Shell(props: {
   );
 }
 
-function LoginPage({ onAuthenticated }: { onAuthenticated: () => void }): React.ReactElement {
+function LoginPage({ onAuthenticated }: { onAuthenticated: () => Promise<void> }): React.ReactElement {
   const [tokenValue, setTokenValue] = useState("");
   const [state, setState] = useState<RequestState>({ status: "idle", message: "" });
 
@@ -278,7 +296,7 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: () => void }): React.
         method: "POST",
         body: { token: tokenValue }
       });
-      onAuthenticated();
+      await onAuthenticated();
       setState({ status: "success", message: "Signed in." });
     } catch (error) {
       setState({ status: "error", message: errorMessage(error) });
@@ -415,6 +433,9 @@ function NewTenantPage({ navigate }: { navigate: (href: string) => void }): Reac
       navigate(`/admin/tenants/${tenant.id}`);
     } catch (error) {
       if (error instanceof ApiRequestError && error.status === 401) {
+        if (error.sessionStillValid) {
+          setState({ status: "error", message: "Tenant creation was not authorized. Please retry." });
+        }
         return;
       }
       setState({ status: "error", message: errorMessage(error) });
@@ -916,7 +937,7 @@ function errorMessage(error: unknown): string {
 export function renderRouteForTest(pathname: string): React.ReactElement {
   const route = routeFromPath(pathname);
   if (route.route === "login") {
-    return <LoginPage onAuthenticated={() => undefined} />;
+    return <LoginPage onAuthenticated={() => Promise.resolve()} />;
   }
   return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} authStatus="authenticated" navigate={() => undefined}>
     {route.route === "tenant-new" ? <NewTenantPage navigate={() => undefined} /> : <DashboardPage health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
