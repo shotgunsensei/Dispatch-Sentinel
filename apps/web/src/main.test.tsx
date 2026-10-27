@@ -18,7 +18,8 @@ describe("admin GUI routes", () => {
 
     expect(html).toContain("Token or password");
     expect(html).toContain("Login");
-    expect(html).toContain("No registration");
+    expect(html).toContain("administrator access");
+    expect(html).not.toContain("Create account");
   });
 
   it("renders dashboard shell with API and safety badges", () => {
@@ -26,10 +27,33 @@ describe("admin GUI routes", () => {
 
     expect(html).toContain("Tenant Setup &amp; Integration Control");
     expect(html).toContain("API Online");
-    expect(html).toContain("Dry-run Safe");
+    expect(html).toContain("Global execution disabled");
     expect(html).toContain("Authenticated");
     expect(html).toContain("Global Datto execution");
     expect(html).not.toContain("Admin authentication is required");
+  });
+
+
+  it("does not claim execution safety while health is unavailable", () => {
+    const html = renderToStaticMarkup(renderRouteForTest("/admin", null));
+    expect(html).toContain("Execution status unknown");
+    expect(html).toContain("API Offline");
+    expect(html).not.toContain("Global execution disabled");
+    expect(html).not.toContain("Dry-run Safe");
+    expect(html).not.toContain("<strong>disabled</strong>");
+  });
+
+  it("keeps execution unknown when an older health response omits the execution field", () => {
+    const html = renderToStaticMarkup(renderRouteForTest("/admin", { ok: true, service: "dispatch-sentinel-api", environment: "test" }));
+    expect(html).toContain("Execution status unknown");
+    expect(html).not.toContain("Global execution disabled");
+    expect(html).not.toContain("<strong>disabled</strong>");
+  });
+
+  it("shows the live execution warning only from explicit health evidence", () => {
+    const html = renderToStaticMarkup(renderRouteForTest("/admin", { ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: true }));
+    expect(html).toContain("Live Execution Enabled");
+    expect(html).not.toContain("Global execution disabled");
   });
 
   it("renders new tenant form", () => {

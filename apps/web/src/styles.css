@@ -364,3 +364,35 @@ label {
     grid-template-columns: 1fr;
   }
 }
+
+/* Reachable controls and compact narrow-screen operations overview. */
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible { outline:3px solid #8fb5ff;outline-offset:4px; }
+nav a,.api-link,button,input,select { min-height:44px; }
+.login-panel { border-top:3px solid #d7374b;box-shadow:0 24px 80px rgba(0,0,0,.3); }
+.login-panel h1 { font-size:clamp(32px,4vw,44px);line-height:1.08;letter-spacing:-.025em;margin-bottom:24px; }
+.login-panel .muted { font-size:14px;line-height:1.7; }
+.metric-grid article { min-width:0; }
+@media(max-width:700px) {
+ .sidebar { padding:18px; }
+ .brand { margin-bottom:16px; }
+ .sidebar nav { grid-template-columns:repeat(3,minmax(0,1fr));gap:6px; }
+ .sidebar nav a { justify-content:center;padding:8px 5px;font-size:12px;text-align:center; }
+ .content { padding:24px 18px; }
+ .header-status { justify-content:flex-start;gap:6px; }
+ .header-status .badge { font-size:11px; }
+ .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .metric-grid article { padding:14px;min-height:104px; }
+ .metric-grid span { font-size:10px;line-height:1.5;display:block; }
+ .metric-grid strong { font-size:26px; }
+ .topbar { margin-bottom:22px;gap:16px; }
+ .login-shell { padding:20px; }
+ .login-panel { padding:24px; }
+}
+
+.status-list { grid-template-columns:minmax(0,1fr); }
+.status-list li,.server-lock,.panel { min-width:0; }
+.status-list strong,.server-lock strong { overflow-wrap:anywhere; }
+@media(max-width:700px) {
+ .toolbar,.settings-grid { grid-template-columns:minmax(0,1fr); }
+ .toolbar button,.settings-grid button { white-space:normal;overflow-wrap:anywhere; }
+}
