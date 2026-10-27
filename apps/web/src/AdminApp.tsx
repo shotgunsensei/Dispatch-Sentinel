@@ -239,7 +239,8 @@ function Shell(props: {
   authStatus: AuthStatus;
   navigate: (href: string) => void;
 }): React.ReactElement {
-  const liveEnabled = Boolean(props.health?.dattoExecutionGloballyEnabled);
+  const executionKnown = typeof props.health?.dattoExecutionGloballyEnabled === "boolean";
+  const liveEnabled = props.health?.dattoExecutionGloballyEnabled === true;
   const authLabel = props.authStatus === "authenticated" ? "Authenticated" : props.authStatus === "checking" ? "Checking Auth" : "Unauthorized";
   return (
     <section className="app-shell">
@@ -253,6 +254,7 @@ function Shell(props: {
             <a
               key={item.href}
               className={item.route === props.activeRoute ? "active" : ""}
+              aria-current={item.route === props.activeRoute ? "page" : undefined}
               href={item.href}
               onClick={(event) => {
                 event.preventDefault();
@@ -274,7 +276,7 @@ function Shell(props: {
             <Badge tone={props.apiStatus === "online" ? "good" : props.apiStatus === "checking" ? "warn" : "bad"}>
               {props.apiStatus === "online" ? "API Online" : props.apiStatus === "checking" ? "API Checking" : "API Offline"}
             </Badge>
-            <Badge tone={liveEnabled ? "bad" : "good"}>{liveEnabled ? "Live Execution Enabled" : "Dry-run Safe"}</Badge>
+            <Badge tone={!executionKnown ? "warn" : liveEnabled ? "bad" : "good"}>{!executionKnown ? "Execution status unknown" : liveEnabled ? "Live Execution Enabled" : "Global execution disabled"}</Badge>
             <Badge tone={props.authStatus === "authenticated" ? "good" : "warn"}>{authLabel}</Badge>
           </div>
         </header>
@@ -316,14 +318,14 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
               autoComplete="current-password"
               value={tokenValue}
               onChange={(event) => setTokenValue(event.currentTarget.value)}
-              placeholder="Enter ADMIN_SETUP_TOKEN"
+              placeholder="Enter your administrator access token"
             />
           </label>
           <button type="submit" disabled={state.status === "loading"}>
             Login
           </button>
           <StatusLine state={state} />
-          <p className="muted">No registration. The MVP uses a secure admin session cookie issued by the API.</p>
+          <p className="muted">Use the administrator access provided for your workspace. Your session is verified by the server.</p>
         </form>
       </section>
     </main>
@@ -370,7 +372,7 @@ function DashboardPage({ health }: { health: HealthResponse | null }): React.Rea
         </Panel>
         <Panel title="Safety Posture">
           <ul className="status-list">
-            <li><span>Global Datto execution</span><strong>{health?.dattoExecutionGloballyEnabled ? "enabled" : "disabled"}</strong></li>
+            <li><span>Global Datto execution</span><strong>{typeof health?.dattoExecutionGloballyEnabled !== "boolean" ? "unknown" : health.dattoExecutionGloballyEnabled ? "enabled" : "disabled"}</strong></li>
             <li><span>Execution default</span><strong>dry_run</strong></li>
             <li><span>Server automation</span><strong>disabled by default</strong></li>
           </ul>
@@ -934,12 +936,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function renderRouteForTest(pathname: string): React.ReactElement {
+export function renderRouteForTest(pathname: string, health: HealthResponse | null = { ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }): React.ReactElement {
   const route = routeFromPath(pathname);
   if (route.route === "login") {
     return <LoginPage onAuthenticated={() => Promise.resolve()} />;
   }
-  return <Shell apiStatus="online" health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} activeRoute={route.route} authStatus="authenticated" navigate={() => undefined}>
-    {route.route === "tenant-new" ? <NewTenantPage navigate={() => undefined} /> : <DashboardPage health={{ ok: true, service: "dispatch-sentinel-api", environment: "test", dattoExecutionGloballyEnabled: false }} />}
+  return <Shell apiStatus={health ? "online" : "offline"} health={health} activeRoute={route.route} authStatus="authenticated" navigate={() => undefined}>
+    {route.route === "tenant-new" ? <NewTenantPage navigate={() => undefined} /> : <DashboardPage health={health} />}
   </Shell>;
 }
